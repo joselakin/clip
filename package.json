@@ -1,0 +1,38 @@
+{
+  "name": "clipper-web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "py:test:setup": "bash scripts/setup-python-test-env.sh",
+    "test:face-crop:python": "[ -x .venv/bin/python ] && .venv/bin/python -m pytest face-detection/tests/test_crop_plan.py || (echo 'Python venv belum siap. Jalankan: npm run py:test:setup' && exit 1)",
+    "test:youtube:downloaders": "node scripts/test-youtube-downloaders.mjs",
+    "test:youtube:python": "bash scripts/run-python-downloader-test.sh",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate:dev": "prisma migrate dev",
+    "prisma:migrate:deploy": "prisma migrate deploy",
+    "prisma:migrate:status": "prisma migrate status",
+    "prisma:studio": "prisma studio"
+  },
+  "dependencies": {
+    "@distube/ytdl-core": "^4.16.12",
+    "@prisma/client": "^6.8.0",
+    "next": "16.2.3",
+    "react": "19.2.4",
+    "react-dom": "19.2.4"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.3",
+    "prisma": "^6.8.0",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  }
+}

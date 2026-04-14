@@ -1,0 +1,256 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum JobType {
+  PROBE
+  TRANSCRIBE
+  FACE_TRACK
+  HIGHLIGHT
+  RENDER_CLIP
+  FULL_PIPELINE
+}
+
+enum IngestStatus {
+  uploaded
+  probing
+  ready
+  failed
+}
+
+enum ProbeStatus {
+  pending
+  processing
+  done
+  failed
+}
+
+enum JobStatus {
+  queued
+  running
+  success
+  failed
+  cancelled
+}
+
+enum SubtitleMode {
+  none
+  soft
+  hard
+}
+
+enum ClipStatus {
+  rendering
+  ready
+  failed
+}
+
+enum SttProvider {
+  groq
+}
+
+enum CredentialMode {
+  user_supplied
+  system_managed
+}
+
+model Video {
+  id               String               @id @default(uuid()) @db.Uuid
+  sourceType       String               @map("source_type") @db.Text
+  sourceUrl        String?              @map("source_url") @db.Text
+  sourcePlatform   String?              @map("source_platform") @db.VarChar(32)
+  externalVideoId  String?              @map("external_video_id") @db.VarChar(32)
+  sourceTitle      String?              @map("source_title") @db.Text
+  storageKey       String               @unique @map("storage_key") @db.Text
+  mimeType         String?              @map("mime_type") @db.Text
+  sizeBytes        BigInt?              @map("size_bytes")
+  originalFilename String?              @map("original_filename") @db.Text
+  sha256           String               @unique @db.Char(64)
+  ingestStatus     IngestStatus         @default(uploaded) @map("ingest_status")
+  probeStatus      ProbeStatus          @default(pending) @map("probe_status")
+  probeError       String?              @map("probe_error") @db.Text
+  probedAt         DateTime?            @map("probed_at") @db.Timestamptz(6)
+  nextRetryAt      DateTime?            @map("next_retry_at") @db.Timestamptz(6)
+  durationMs       Int                  @map("duration_ms")
+  fps              Decimal?             @db.Decimal(6, 3)
+  width            Int?
+  height           Int?
+  rotation         Int?
+  videoCodec       String?              @map("video_codec") @db.Text
+  audioCodec       String?              @map("audio_codec") @db.Text
+  bitrateKbps      Int?                 @map("bitrate_kbps")
+  sampleRate       Int?                 @map("sample_rate")
+  channels         Int?
+  probeRawJson     Json                 @default("{}") @map("probe_raw_json")
+  metadata         Json                 @default("{}")
+  createdAt        DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
+  jobs             Job[]
+  transcriptSegs   TranscriptSegment[]
+  highlights       HighlightCandidate[]
+  faceTracks       FaceTrack[]
+  clips            Clip[]
+
+  @@index([sourcePlatform, externalVideoId], map: "videos_source_platform_external_video_id_idx")
+  @@index([ingestStatus, createdAt], map: "videos_ingest_status_created_at_idx")
+  @@index([probeStatus, nextRetryAt], map: "videos_probe_status_next_retry_at_idx")
+  @@map("videos")
+}
+
+model ApiCredential {
+  id             String      @id @default(uuid()) @db.Uuid
+  provider       SttProvider
+  ownerRef       String      @map("owner_ref") @db.Text
+  encryptedApiKey String     @map("encrypted_api_key") @db.Text
+  keyFingerprint String      @map("key_fingerprint") @db.Char(16)
+  isActive       Boolean     @default(true) @map("is_active")
+  lastUsedAt     DateTime?   @map("last_used_at") @db.Timestamptz(6)
+  metadata       Json        @default("{}")
+  createdAt      DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
+  revokedAt      DateTime?   @map("revoked_at") @db.Timestamptz(6)
+  jobs           Job[]
+
+  @@index([ownerRef, provider], map: "api_credentials_owner_ref_provider_idx")
+  @@unique([ownerRef, provider, keyFingerprint], map: "api_credentials_owner_ref_provider_key_fingerprint_key")
+  @@map("api_credentials")
+}
+
+model Job {
+  id                 String               @id @default(uuid()) @db.Uuid
+  videoId            String               @map("video_id") @db.Uuid
+  jobType            JobType              @map("job_type")
+  status             JobStatus
+  priority           Int                  @default(100) @db.SmallInt
+  payload            Json                 @default("{}")
+  result             Json                 @default("{}")
+  errorMessage       String?              @map("error_message") @db.Text
+  attempts           Int                  @default(0) @db.SmallInt
+  maxAttempts        Int                  @default(3) @map("max_attempts") @db.SmallInt
+  queuedAt           DateTime             @default(now()) @map("queued_at") @db.Timestamptz(6)
+  startedAt          DateTime?            @map("started_at") @db.Timestamptz(6)
+  finishedAt         DateTime?            @map("finished_at") @db.Timestamptz(6)
+  nextRetryAt        DateTime?            @map("next_retry_at") @db.Timestamptz(6)
+  workerName         String?              @map("worker_name") @db.Text
+  lockedBy           String?              @map("locked_by") @db.Text
+  lockedAt           DateTime?            @map("locked_at") @db.Timestamptz(6)
+  lastError          String?              @map("last_error") @db.Text
+  dedupeKey          String?              @unique @map("dedupe_key") @db.Text
+  sttProvider        SttProvider?         @map("stt_provider")
+  sttModel           String?              @map("stt_model") @db.Text
+  credentialMode     CredentialMode?      @map("credential_mode")
+  credentialFingerprint String?           @map("credential_fingerprint") @db.Char(16)
+  credentialId       String?              @map("credential_id") @db.Uuid
+  providerRequestId  String?              @map("provider_request_id") @db.Text
+  createdAt          DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
+  video              Video                @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  credential         ApiCredential?       @relation(fields: [credentialId], references: [id], onDelete: SetNull)
+  transcriptSegs     TranscriptSegment[]
+  highlights         HighlightCandidate[]
+  faceTracks         FaceTrack[]
+  renderedClipOutput Clip[]               @relation("RenderJobClips")
+
+  @@index([videoId], map: "jobs_video_id_idx")
+  @@index([jobType, sttProvider, createdAt], map: "jobs_job_type_stt_provider_created_at_idx")
+  @@index([status, priority, queuedAt], map: "jobs_status_priority_queued_at_idx")
+  @@map("jobs")
+}
+
+model TranscriptSegment {
+  id           BigInt    @id @default(autoincrement())
+  videoId      String    @map("video_id") @db.Uuid
+  jobId        String?   @map("job_id") @db.Uuid
+  startMs      Int       @map("start_ms")
+  endMs        Int       @map("end_ms")
+  text         String    @db.Text
+  language     String?   @db.VarChar(16)
+  confidence   Float?    @db.Real
+  speakerLabel String?   @map("speaker_label") @db.Text
+  sttProvider  SttProvider? @map("stt_provider")
+  sttModel     String?   @map("stt_model") @db.Text
+  wordsJson    Json      @default("[]") @map("words_json")
+  segmentRaw   Json?     @map("segment_raw")
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  video        Video     @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  job          Job?      @relation(fields: [jobId], references: [id], onDelete: SetNull)
+
+  @@index([videoId, startMs], map: "transcript_segments_video_id_start_ms_idx")
+  @@map("transcript_segments")
+}
+
+model HighlightCandidate {
+  id          BigInt    @id @default(autoincrement())
+  videoId     String    @map("video_id") @db.Uuid
+  jobId       String?   @map("job_id") @db.Uuid
+  startMs     Int       @map("start_ms")
+  endMs       Int       @map("end_ms")
+  scoreTotal  Decimal   @map("score_total") @db.Decimal(6, 4)
+  scoreText   Decimal?  @map("score_text") @db.Decimal(6, 4)
+  scoreAudio  Decimal?  @map("score_audio") @db.Decimal(6, 4)
+  scoreVisual Decimal?  @map("score_visual") @db.Decimal(6, 4)
+  reasonJson  Json      @default("{}") @map("reason_json")
+  rankOrder   Int?      @map("rank_order")
+  isSelected  Boolean   @default(false) @map("is_selected")
+  selectedBy  String?   @map("selected_by") @db.Text
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  video       Video     @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  job         Job?      @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  clips       Clip[]
+
+  @@index([videoId, scoreTotal], map: "highlight_candidates_video_id_score_total_idx")
+  @@map("highlight_candidates")
+}
+
+model FaceTrack {
+  id             BigInt    @id @default(autoincrement())
+  videoId        String    @map("video_id") @db.Uuid
+  jobId          String?   @map("job_id") @db.Uuid
+  trackId        Int       @map("track_id")
+  startMs        Int?      @map("start_ms")
+  endMs          Int?      @map("end_ms")
+  avgConfidence  Float?    @map("avg_confidence") @db.Real
+  frameCount     Int       @default(0) @map("frame_count")
+  trajectoryJson Json      @map("trajectory_json")
+  isPrimary      Boolean   @default(false) @map("is_primary")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  video          Video     @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  job            Job?      @relation(fields: [jobId], references: [id], onDelete: SetNull)
+
+  @@unique([videoId, trackId], map: "face_tracks_video_id_track_id_key")
+  @@index([videoId, startMs, endMs], map: "face_tracks_video_id_start_ms_end_ms_idx")
+  @@map("face_tracks")
+}
+
+model Clip {
+  id                   String              @id @default(uuid()) @db.Uuid
+  videoId              String              @map("video_id") @db.Uuid
+  highlightCandidateId BigInt?             @map("highlight_candidate_id")
+  renderJobId          String?             @map("render_job_id") @db.Uuid
+  startMs              Int                 @map("start_ms")
+  endMs                Int                 @map("end_ms")
+  targetAspect         String              @default("9:16") @map("target_aspect") @db.VarChar(10)
+  outputWidth          Int                 @map("output_width")
+  outputHeight         Int                 @map("output_height")
+  subtitleMode         SubtitleMode        @default(none) @map("subtitle_mode")
+  subtitleFileKey      String?             @map("subtitle_file_key") @db.Text
+  outputFileKey        String              @map("output_file_key") @db.Text
+  thumbnailKey         String?             @map("thumbnail_key") @db.Text
+  transcriptSnapshot   String?             @map("transcript_snapshot") @db.Text
+  status               ClipStatus          @default(rendering)
+  createdAt            DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+  publishedAt          DateTime?           @map("published_at") @db.Timestamptz(6)
+  video                Video               @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  highlightCandidate   HighlightCandidate? @relation(fields: [highlightCandidateId], references: [id], onDelete: SetNull)
+  renderJob            Job?                @relation("RenderJobClips", fields: [renderJobId], references: [id], onDelete: SetNull)
+
+  @@index([videoId, createdAt], map: "clips_video_id_created_at_idx")
+  @@map("clips")
+}

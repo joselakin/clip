@@ -1,0 +1,9 @@
+[project]
+name = "face-clipper"
+version = "0.1.0"
+description = "Face-aware portrait crop planning for video clipping"
+requires-python = ">=3.10"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"

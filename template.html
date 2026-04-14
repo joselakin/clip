@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+    <link
+        href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;700;800&amp;family=Inter:wght@400;500;600;700&amp;display=swap"
+        rel="stylesheet" />
+    <link
+        href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap"
+        rel="stylesheet" />
+    <link
+        href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap"
+        rel="stylesheet" />
+    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+    <script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "surface-tint": "#85adff",
+                        "on-surface": "#ffffff",
+                        "on-secondary-fixed-variant": "#5c5b5b",
+                        "surface-container-high": "#201f1f",
+                        "on-surface-variant": "#adaaaa",
+                        "inverse-surface": "#fcf9f8",
+                        "on-secondary-container": "#d2d0cf",
+                        "primary": "#85adff",
+                        "surface": "#0e0e0e",
+                        "on-tertiary-container": "#553e00",
+                        "surface-container-low": "#131313",
+                        "on-background": "#ffffff",
+                        "error-dim": "#d7383b",
+                        "on-error-container": "#ffa8a3",
+                        "surface-container-lowest": "#000000",
+                        "secondary": "#e5e2e1",
+                        "on-primary-fixed": "#000000",
+                        "secondary-container": "#474746",
+                        "surface-bright": "#2c2c2c",
+                        "surface-container-highest": "#262626",
+                        "tertiary-fixed": "#fdc003",
+                        "inverse-on-surface": "#565555",
+                        "on-secondary-fixed": "#403f3f",
+                        "on-primary-container": "#00214f",
+                        "surface-variant": "#262626",
+                        "on-error": "#490006",
+                        "inverse-primary": "#005bc3",
+                        "secondary-fixed-dim": "#d6d4d3",
+                        "tertiary-container": "#fdc003",
+                        "outline-variant": "#484847",
+                        "on-tertiary": "#604700",
+                        "secondary-dim": "#d6d4d3",
+                        "primary-container": "#6d9fff",
+                        "on-primary": "#002c65",
+                        "on-primary-fixed-variant": "#002a61",
+                        "tertiary": "#ffd16c",
+                        "error": "#ff716c",
+                        "on-secondary": "#525151",
+                        "error-container": "#9f0519",
+                        "tertiary-fixed-dim": "#ecb200",
+                        "secondary-fixed": "#e5e2e1",
+                        "background": "#0e0e0e",
+                        "outline": "#767575",
+                        "surface-container": "#1a1919",
+                        "tertiary-dim": "#ecb200",
+                        "primary-fixed": "#6d9fff",
+                        "on-tertiary-fixed": "#3d2b00",
+                        "on-tertiary-fixed-variant": "#604700",
+                        "primary-dim": "#0c70ea",
+                        "surface-dim": "#0e0e0e",
+                        "primary-fixed-dim": "#5291ff"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                    "fontFamily": {
+                        "headline": ["Manrope"],
+                        "body": ["Inter"],
+                        "label": ["Inter"]
+                    }
+                },
+            },
+        }
+    </script>
+    <style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+
+        body {
+            background-color: #0e0e0e;
+            color: #ffffff;
+            font-family: 'Inter', sans-serif;
+        }
+    </style>
+</head>
+
+<body class="antialiased overflow-hidden">
+    <!-- SideNavBar -->
+    <aside
+        class="h-screen w-64 fixed left-0 top-0 bg-[#131313] transition-colors shadow-none z-50 flex flex-col justify-between py-8">
+        <div class="flex flex-col gap-8">
+            <div class="px-6">
+                <span class="text-xl font-black text-[#85adff] font-['Manrope'] tracking-wide uppercase">Master
+                    Suite</span>
+                <p class="text-[10px] font-['Manrope'] tracking-widest text-[#adaaaa] font-bold uppercase mt-1">Pro
+                    Production</p>
+            </div>
+            <nav class="flex flex-col">
+                <a class="border-l-4 border-[#85adff] text-white bg-transparent px-6 py-4 flex items-center gap-3 font-['Manrope'] tracking-wide font-bold uppercase"
+                    href="#">
+                    <span class="material-symbols-outlined text-[#85adff]" data-icon="dashboard">dashboard</span>
+                    Dashboard
+                </a>
+                <a class="text-[#adaaaa] hover:text-white hover:bg-[#201f1f] transition-all duration-300 px-6 py-4 flex items-center gap-3 font-['Manrope'] tracking-wide font-bold uppercase"
+                    href="#">
+                    <span class="material-symbols-outlined" data-icon="video_library">video_library</span>
+                    Library
+                </a>
+                <a class="text-[#adaaaa] hover:text-white hover:bg-[#201f1f] transition-all duration-300 px-6 py-4 flex items-center gap-3 font-['Manrope'] tracking-wide font-bold uppercase"
+                    href="#">
+                    <span class="material-symbols-outlined" data-icon="auto_awesome">auto_awesome</span>
+                    Magic Clips
+                </a>
+                <a class="text-[#adaaaa] hover:text-white hover:bg-[#201f1f] transition-all duration-300 px-6 py-4 flex items-center gap-3 font-['Manrope'] tracking-wide font-bold uppercase"
+                    href="#">
+                    <span class="material-symbols-outlined"
+                        data-icon="settings_input_component">settings_input_component</span>
+                    Automations
+                </a>
+                <a class="text-[#adaaaa] hover:text-white hover:bg-[#201f1f] transition-all duration-300 px-6 py-4 flex items-center gap-3 font-['Manrope'] tracking-wide font-bold uppercase"
+                    href="#">
+                    <span class="material-symbols-outlined" data-icon="settings">settings</span>
+                    Settings
+                </a>
+            </nav>
+            <!-- Configuration Section (Custom Requirement) -->
+            <div class="px-6 mt-4">
+                <h3 class="text-[10px] font-['Manrope'] tracking-[0.2em] text-[#adaaaa] font-extrabold uppercase mb-4">
+                    Configuration</h3>
+                <div class="space-y-4">
+                    <div class="flex flex-col gap-2">
+                        <label class="text-[11px] font-medium text-[#adaaaa] font-body">GROQ API Key</label>
+                        <input
+                            class="w-full bg-surface-container-highest border-none rounded-md px-3 py-2 text-sm text-white focus:ring-2 focus:ring-[#85adff]/20 placeholder-[#5c5b5b] transition-all"
+                            placeholder="gsk_..." type="password" />
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="px-6 flex flex-col gap-4">
+            <button
+                class="w-full py-3 px-4 rounded-full bg-gradient-to-br from-[#85adff] to-[#0c70ea] text-on-primary-fixed text-xs font-bold uppercase tracking-wider scale-95 active:scale-90 transition-all">
+                Upgrade to Pro
+            </button>
+            <div class="flex flex-col gap-2 border-t border-white/5 pt-4">
+                <a class="text-[#adaaaa] hover:text-white flex items-center gap-3 text-sm py-1" href="#">
+                    <span class="material-symbols-outlined text-sm" data-icon="help">help</span>
+                    Help
+                </a>
+                <a class="text-[#adaaaa] hover:text-white flex items-center gap-3 text-sm py-1" href="#">
+                    <span class="material-symbols-outlined text-sm" data-icon="logout">logout</span>
+                    Logout
+                </a>
+            </div>
+        </div>
+    </aside>
+    <!-- TopNavBar -->
+    <header
+        class="fixed top-0 right-0 left-64 h-16 z-40 bg-[#0e0e0e]/70 backdrop-blur-xl no-border border-b border-white/5 shadow-2xl shadow-white/5 flex items-center justify-between px-8 w-[calc(100%-16rem)]">
+        <div class="flex items-center gap-8">
+            <div class="flex items-center gap-6">
+                <a class="text-[#85adff] font-['Inter'] font-bold text-sm border-b-2 border-[#85adff] pb-1"
+                    href="#">Workflow</a>
+                <a class="text-[#adaaaa] hover:text-white transition-colors font-['Inter'] font-medium text-sm"
+                    href="#">Assets</a>
+                <a class="text-[#adaaaa] hover:text-white transition-colors font-['Inter'] font-medium text-sm"
+                    href="#">Analytics</a>
+            </div>
+        </div>
+        <div class="flex items-center gap-6">
+            <div class="flex items-center gap-3">
+                <button class="text-[#adaaaa] hover:text-white transition-colors">
+                    <span class="material-symbols-outlined" data-icon="notifications">notifications</span>
+                </button>
+                <div class="w-8 h-8 rounded-full overflow-hidden border border-white/10">
+                    <img alt="User Profile" class="w-full h-full object-cover"
+                        data-alt="Close up portrait of a professional male editor in a dark studio setting with soft blue ambient lighting"
+                        src="https://lh3.googleusercontent.com/aida-public/AB6AXuBHSvRFjA8heC6FUb8-t_rSUb3cyWsmANUn6atxWzM3-GN8l38fce11yiScyWXEJq7-QFsOYXDuCvkhxBGg8xTvWzTbwqhldY8OQpEXy8YwbyqoIFVgRXwiueDeT9i8cAiCoBbjfEet7gS-tSQQMbKbAmzTxUeN4zA8VOXKop9xa3TB6puBbCi0BcK-IlMBYyNrxFVH1lmjxod7RT4fXUQylZYD_X27Y4qvEDQgYybgYVCip41F75U0Ee6Z_Oi3g63daz-h7jYhLG8" />
+                </div>
+            </div>
+            <div class="flex gap-3">
+                <button
+                    class="px-4 py-1.5 rounded-lg text-sm font-semibold text-white/70 hover:text-white transition-colors">
+                    Preview
+                </button>
+                <button
+                    class="px-5 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-sm font-bold text-[#85adff] transition-all">
+                    Export
+                </button>
+            </div>
+        </div>
+    </header>
+    <!-- Main Content -->
+    <main class="ml-64 pt-16 h-screen relative bg-surface">
+        <!-- Subtle Ambient Glow -->
+        <div class="absolute inset-0 pointer-events-none overflow-hidden">
+            <div
+                class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] bg-[#85adff]/5 rounded-full blur-[120px]">
+            </div>
+        </div>
+        <div class="relative z-10 h-full flex flex-col items-center justify-center px-4 max-w-5xl mx-auto">
+            <div class="w-full text-center mb-12">
+                <h1
+                    class="font-headline text-5xl font-extrabold tracking-tight mb-4 bg-gradient-to-b from-white to-[#adaaaa] bg-clip-text text-transparent">
+                    Create magic from motion.
+                </h1>
+                <p class="font-body text-[#adaaaa] text-lg max-w-xl mx-auto">
+                    Paste your video source below. Master Suite AI will automatically identify the most viral-worthy
+                    moments.
+                </p>
+            </div>
+            <div class="w-full max-w-3xl space-y-8">
+                <!-- Central Input Area -->
+                <div class="relative group">
+                    <div
+                        class="absolute -inset-0.5 bg-gradient-to-r from-[#85adff]/20 to-[#0c70ea]/20 rounded-2xl blur opacity-30 group-focus-within:opacity-100 transition duration-1000 group-focus-within:duration-200">
+                    </div>
+                    <div class="relative flex items-center bg-surface-container-high rounded-2xl p-2 shadow-2xl">
+                        <div class="flex-1 flex items-center px-6">
+                            <span class="material-symbols-outlined text-[#adaaaa] mr-4" data-icon="link">link</span>
+                            <input
+                                class="w-full bg-transparent border-none focus:ring-0 text-xl font-medium text-white placeholder-[#5c5b5b] py-6"
+                                placeholder="Paste video link or upload file" type="text" />
+                        </div>
+                        <button
+                            class="bg-surface-container-highest hover:bg-surface-bright p-6 rounded-xl transition-colors group/upload">
+                            <span
+                                class="material-symbols-outlined text-[#85adff] group-hover/upload:scale-110 transition-transform"
+                                data-icon="upload_file">upload_file</span>
+                        </button>
+                    </div>
+                </div>
+                <!-- Produce Clips Button -->
+                <div class="flex justify-center">
+                    <button
+                        class="group relative px-12 py-5 rounded-full bg-gradient-to-br from-[#85adff] to-[#0c70ea] text-on-primary-fixed text-lg font-bold uppercase tracking-[0.1em] shadow-[0_0_40px_-10px_rgba(133,173,255,0.4)] hover:shadow-[0_0_60px_-5px_rgba(133,173,255,0.6)] transition-all active:scale-95">
+                        <span class="flex items-center gap-3">
+                            <span class="material-symbols-outlined" data-icon="auto_videocam"
+                                style="font-variation-settings: 'FILL' 1;">auto_videocam</span>
+                            Produce Clips
+                        </span>
+                    </button>
+                </div>
+            </div>
+            <!-- Suggestion Chips / Quick Actions -->
+            <div class="mt-16 flex flex-wrap justify-center gap-3 opacity-60 hover:opacity-100 transition-opacity">
+                <span class="text-xs font-bold uppercase tracking-widest text-[#adaaaa] w-full text-center mb-2">Popular
+                    Workflows</span>
+                <button
+                    class="px-4 py-2 rounded-lg bg-surface-container-low border border-white/5 text-sm text-[#adaaaa] hover:text-white hover:bg-surface-container-high transition-all">
+                    YouTube Podcast to Shorts
+                </button>
+                <button
+                    class="px-4 py-2 rounded-lg bg-surface-container-low border border-white/5 text-sm text-[#adaaaa] hover:text-white hover:bg-surface-container-high transition-all">
+                    Gaming Highlight Reel
+                </button>
+                <button
+                    class="px-4 py-2 rounded-lg bg-surface-container-low border border-white/5 text-sm text-[#adaaaa] hover:text-white hover:bg-surface-container-high transition-all">
+                    Educational Summary
+                </button>
+            </div>
+        </div>
+        <!-- Background Bento Details -->
+        <div class="absolute bottom-12 right-12 flex gap-4 pointer-events-none opacity-40">
+            <div
+                class="w-32 h-32 rounded-2xl bg-surface-container-low border border-white/5 flex flex-col items-center justify-center p-4">
+                <span class="text-[#85adff] font-headline font-black text-2xl">4K</span>
+                <span class="text-[10px] text-[#adaaaa] font-bold uppercase">Resolution</span>
+            </div>
+            <div
+                class="w-32 h-32 rounded-2xl bg-surface-container-low border border-white/5 flex flex-col items-center justify-center p-4">
+                <span class="text-[#ffd16c] font-headline font-black text-2xl">AI</span>
+                <span class="text-[10px] text-[#adaaaa] font-bold uppercase">Enhanced</span>
+            </div>
+        </div>
+    </main>
+</body>
+
+</html>
