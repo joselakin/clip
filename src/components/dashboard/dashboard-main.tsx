@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 import { BentoStatsCards } from "@/components/dashboard/bento-stats-cards";
@@ -85,8 +86,12 @@ function formatMs(ms: number): string {
 }
 
 export function DashboardMain() {
+  const router = useRouter();
   const [url, setUrl] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [renderLayoutMode, setRenderLayoutMode] = useState<"standard" | "framed">("standard");
+  const [watermarkText, setWatermarkText] = useState("");
+  const [watermarkLogoFile, setWatermarkLogoFile] = useState<File | null>(null);
   const [processing, setProcessing] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [isError, setIsError] = useState(false);
@@ -107,7 +112,9 @@ export function DashboardMain() {
   }
 
   async function handleProduce() {
+    let redirectVideoId: string | null = null;
     const useUpload = Boolean(selectedFile);
+    const normalizedWatermarkText = watermarkText.trim().slice(0, 120);
 
     if (!useUpload && !url.trim()) {
       setIsError(true);
@@ -134,6 +141,13 @@ export function DashboardMain() {
 
         const formData = new FormData();
         formData.append("file", selectedFile as File);
+        formData.append("renderLayout", renderLayoutMode);
+        if (normalizedWatermarkText) {
+          formData.append("watermarkText", normalizedWatermarkText);
+        }
+        if (watermarkLogoFile) {
+          formData.append("watermarkLogo", watermarkLogoFile);
+        }
 
         response = await fetch("/api/videos/upload", {
           method: "POST",
@@ -143,10 +157,19 @@ export function DashboardMain() {
         setMessage("Downloading video from YouTube...");
         markStep("download", "running", "Mengunduh video dari YouTube...");
 
+        const formData = new FormData();
+        formData.append("url", url.trim());
+        formData.append("renderLayout", renderLayoutMode);
+        if (normalizedWatermarkText) {
+          formData.append("watermarkText", normalizedWatermarkText);
+        }
+        if (watermarkLogoFile) {
+          formData.append("watermarkLogo", watermarkLogoFile);
+        }
+
         response = await fetch("/api/videos/import-youtube", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url }),
+          body: formData,
         });
       }
 
@@ -329,12 +352,20 @@ export function DashboardMain() {
       setRenderedClips(renderResult.render?.clips || []);
       setUrl("");
       setSelectedFile(null);
+      setRenderLayoutMode("standard");
+      setWatermarkText("");
+      setWatermarkLogoFile(null);
+      redirectVideoId = importedVideoId;
     } catch {
       markStep(activeStep, "error", "Terjadi kesalahan jaringan saat memproses step ini.");
       setIsError(true);
       setMessage("Terjadi kesalahan jaringan saat memproses video.");
     } finally {
       setProcessing(false);
+
+      if (redirectVideoId) {
+        router.push(`/library?videoId=${encodeURIComponent(redirectVideoId)}`);
+      }
     }
   }
 
@@ -356,6 +387,12 @@ export function DashboardMain() {
             onChange={setUrl}
             onFileSelect={setSelectedFile}
             selectedFileName={selectedFile?.name || null}
+            renderLayoutMode={renderLayoutMode}
+            onRenderLayoutModeChange={setRenderLayoutMode}
+            watermarkText={watermarkText}
+            onWatermarkTextChange={setWatermarkText}
+            onWatermarkLogoSelect={setWatermarkLogoFile}
+            selectedWatermarkLogoName={watermarkLogoFile?.name || null}
             disabled={processing}
           />
           <ProduceClipsCta onClick={handleProduce} disabled={processing} isProcessing={processing} />

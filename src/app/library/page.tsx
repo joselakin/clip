@@ -16,63 +16,76 @@ export default async function LibraryPage() {
     redirect("/login");
   }
 
-  const clips = await prisma.clip.findMany({
+  const grouped = await prisma.clip.groupBy({
+    by: ["videoId"],
     where: {
       status: "ready",
     },
+    _count: {
+      _all: true,
+    },
+    _max: {
+      createdAt: true,
+    },
     orderBy: {
-      createdAt: "desc",
-    },
-    take: 48,
-    select: {
-      id: true,
-      startMs: true,
-      endMs: true,
-      outputFileKey: true,
-      thumbnailKey: true,
-      subtitleMode: true,
-      highlightCandidate: {
-        select: {
-          scoreTotal: true,
-          reasonJson: true,
-        },
-      },
-      video: {
-        select: {
-          id: true,
-          sourceTitle: true,
-          sourcePlatform: true,
-          sourceUrl: true,
-        },
+      _max: {
+        createdAt: "desc",
       },
     },
+    take: 500,
   });
 
-  const serializedClips = clips.map((clip) => {
-    const scorePercent = clip.highlightCandidate
-      ? Math.round(Number(clip.highlightCandidate.scoreTotal) * 100)
-      : null;
+  const videoIds = grouped.map((item) => item.videoId);
 
-    return {
-      id: clip.id,
-      startMs: clip.startMs,
-      endMs: clip.endMs,
-      outputFileKey: clip.outputFileKey,
-      thumbnailKey: clip.thumbnailKey,
-      subtitleMode: clip.subtitleMode,
-      highlight: clip.highlightCandidate
-        ? {
-            scorePercent,
-            reasonJson: clip.highlightCandidate.reasonJson,
-          }
-        : null,
-      video: clip.video,
-    };
-  });
+  const [videos, latestClips] = await Promise.all([
+    prisma.video.findMany({
+      where: { id: { in: videoIds } },
+      select: {
+        id: true,
+        sourceTitle: true,
+        sourcePlatform: true,
+        sourceUrl: true,
+      },
+    }),
+    prisma.clip.findMany({
+      where: {
+        status: "ready",
+        videoId: { in: videoIds },
+      },
+      orderBy: {
+        createdAt: "desc",
+      },
+      distinct: ["videoId"],
+      select: {
+        videoId: true,
+        thumbnailKey: true,
+      },
+    }),
+  ]);
+
+  const videoMap = new Map(videos.map((video) => [video.id, video]));
+  const latestMap = new Map(latestClips.map((clip) => [clip.videoId, clip]));
+
+  const folders = grouped
+    .map((item) => {
+      const video = videoMap.get(item.videoId);
+      if (!video) {
+        return null;
+      }
+
+      return {
+        videoId: item.videoId,
+        clipCount: item._count._all,
+        latestClipAt: item._max.createdAt?.toISOString() || null,
+        thumbnailKey: latestMap.get(item.videoId)?.thumbnailKey || null,
+        video,
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
 
   return (
     <DashboardShell activeSection="library">
-      <LibraryMain clips={serializedClips} />
+      <LibraryMain folders={folders} />
     </DashboardShell>
   );
 }

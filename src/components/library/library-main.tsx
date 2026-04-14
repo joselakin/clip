@@ -1,6 +1,20 @@
 "use client";
 
+import { useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
+
+type LibraryFolder = {
+  videoId: string;
+  clipCount: number;
+  latestClipAt: string | null;
+  thumbnailKey: string | null;
+  video: {
+    id: string;
+    sourceTitle: string | null;
+    sourcePlatform: string | null;
+    sourceUrl: string | null;
+  };
+};
 
 type LibraryClip = {
   id: string;
@@ -22,11 +36,10 @@ type LibraryClip = {
 };
 
 type LibraryMainProps = {
-  clips: LibraryClip[];
+  folders: LibraryFolder[];
 };
 
-const INITIAL_VISIBLE_COUNT = 9;
-const VISIBLE_BATCH_SIZE = 9;
+const INITIAL_CLIPS_BATCH = 12;
 
 type ClipReviewView = {
   recommendedTitle: string | null;
@@ -44,6 +57,23 @@ function formatMs(ms: number): string {
     .padStart(2, "0");
   const seconds = (totalSeconds % 60).toString().padStart(2, "0");
   return `${minutes}:${seconds}`;
+}
+
+function formatDateLabel(rawIso: string | null): string {
+  if (!rawIso) {
+    return "-";
+  }
+
+  const date = new Date(rawIso);
+  if (Number.isNaN(date.getTime())) {
+    return "-";
+  }
+
+  return new Intl.DateTimeFormat("id-ID", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  }).format(date);
 }
 
 function buildFileUrl(key: string, download = false): string {
@@ -92,6 +122,55 @@ function extractClipReview(clip: LibraryClip): ClipReviewView {
     scoreHook: asScore(clipReview?.hookScore),
     scoreValue: asScore(clipReview?.valueScore),
   };
+}
+
+function FolderCard({
+  folder,
+  isActive,
+  onSelect,
+}: {
+  folder: LibraryFolder;
+  isActive: boolean;
+  onSelect: (videoId: string) => void;
+}) {
+  const title = folder.video.sourceTitle?.trim() || "Untitled Source";
+  const thumbnailUrl = folder.thumbnailKey ? buildFileUrl(folder.thumbnailKey) : null;
+
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(folder.videoId)}
+      className={`w-full text-left rounded-xl border overflow-hidden transition-all ${
+        isActive
+          ? "border-[#85adff]/80 bg-[#101523] shadow-[0_0_0_1px_rgba(133,173,255,0.45)]"
+          : "border-white/10 bg-[#151515]/85 hover:border-white/25"
+      }`}
+    >
+      <div className="relative h-40 bg-black/70">
+        {thumbnailUrl ? (
+          <img
+            src={thumbnailUrl}
+            alt={`Cover ${title}`}
+            className="absolute inset-0 w-full h-full object-cover"
+            loading="lazy"
+          />
+        ) : (
+          <div className="absolute inset-0 flex items-center justify-center text-[#777] text-sm">
+            No thumbnail
+          </div>
+        )}
+        <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent" />
+      </div>
+
+      <div className="p-4 space-y-2">
+        <h2 className="text-sm font-bold text-white line-clamp-2">{title}</h2>
+        <p className="text-xs text-[#b8b4b2]">
+          {folder.video.sourcePlatform || "unknown"} • {folder.clipCount} clip
+        </p>
+        <p className="text-[11px] text-[#8f8b89]">Update terakhir: {formatDateLabel(folder.latestClipAt)}</p>
+      </div>
+    </button>
+  );
 }
 
 function LibraryClipCard({ clip }: { clip: LibraryClip }) {
@@ -214,17 +293,130 @@ function LibraryClipCard({ clip }: { clip: LibraryClip }) {
   );
 }
 
-export function LibraryMain({ clips }: LibraryMainProps) {
-  const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE_COUNT);
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
+export function LibraryMain({ folders }: LibraryMainProps) {
+  const searchParams = useSearchParams();
+  const requestedVideoId = searchParams.get("videoId");
 
-  const visibleClips = useMemo(() => {
-    return clips.slice(0, visibleCount);
-  }, [clips, visibleCount]);
+  const [selectedVideoId, setSelectedVideoId] = useState<string | null>(null);
+  const [videoClips, setVideoClips] = useState<Record<string, LibraryClip[]>>({});
+  const [loadingMap, setLoadingMap] = useState<Record<string, boolean>>({});
+  const [errorMap, setErrorMap] = useState<Record<string, string | null>>({});
+  const [hasMoreMap, setHasMoreMap] = useState<Record<string, boolean>>({});
+  const [cursorMap, setCursorMap] = useState<Record<string, string | null>>({});
+  const [initializedMap, setInitializedMap] = useState<Record<string, boolean>>({});
+  const clipSentinelRef = useRef<HTMLDivElement | null>(null);
+
+  const selectedFolder = useMemo(() => {
+    if (!selectedVideoId) {
+      return null;
+    }
+    return folders.find((folder) => folder.videoId === selectedVideoId) || null;
+  }, [folders, selectedVideoId]);
+
+  const selectedClips = useMemo(() => {
+    if (!selectedVideoId) {
+      return [];
+    }
+    return videoClips[selectedVideoId] || [];
+  }, [selectedVideoId, videoClips]);
+
+  async function fetchFolderClips(videoId: string, append: boolean) {
+    if (loadingMap[videoId]) {
+      return;
+    }
+
+    setLoadingMap((prev) => ({ ...prev, [videoId]: true }));
+    setErrorMap((prev) => ({ ...prev, [videoId]: null }));
+
+    try {
+      const params = new URLSearchParams({
+        videoId,
+        limit: String(INITIAL_CLIPS_BATCH),
+      });
+
+      if (append && cursorMap[videoId]) {
+        params.set("cursor", cursorMap[videoId] || "");
+      }
+
+      const response = await fetch(`/api/library/clips?${params.toString()}`, {
+        method: "GET",
+      });
+
+      const result = (await response.json()) as {
+        ok: boolean;
+        message?: string;
+        clips?: LibraryClip[];
+        pageInfo?: {
+          hasMore?: boolean;
+          nextCursor?: string | null;
+        };
+      };
+
+      if (!response.ok || !result.ok) {
+        throw new Error(result.message || "Gagal memuat clips pada folder ini");
+      }
+
+      const nextItems = result.clips || [];
+
+      setVideoClips((prev) => ({
+        ...prev,
+        [videoId]: append ? [...(prev[videoId] || []), ...nextItems] : nextItems,
+      }));
+      setHasMoreMap((prev) => ({ ...prev, [videoId]: Boolean(result.pageInfo?.hasMore) }));
+      setCursorMap((prev) => ({ ...prev, [videoId]: result.pageInfo?.nextCursor || null }));
+      setInitializedMap((prev) => ({ ...prev, [videoId]: true }));
+    } catch (error) {
+      setErrorMap((prev) => ({
+        ...prev,
+        [videoId]: error instanceof Error ? error.message : "Gagal memuat clips",
+      }));
+    } finally {
+      setLoadingMap((prev) => ({ ...prev, [videoId]: false }));
+    }
+  }
+
+  function onSelectFolder(videoId: string) {
+    setSelectedVideoId(videoId);
+
+    if (!initializedMap[videoId]) {
+      void fetchFolderClips(videoId, false);
+    }
+  }
 
   useEffect(() => {
-    const node = sentinelRef.current;
+    if (!requestedVideoId) {
+      return;
+    }
+
+    const exists = folders.some((folder) => folder.videoId === requestedVideoId);
+    if (!exists) {
+      return;
+    }
+
+    setSelectedVideoId((prev) => prev || requestedVideoId);
+  }, [requestedVideoId, folders]);
+
+  useEffect(() => {
+    if (!selectedVideoId) {
+      return;
+    }
+
+    if (!initializedMap[selectedVideoId]) {
+      void fetchFolderClips(selectedVideoId, false);
+    }
+  }, [selectedVideoId, initializedMap]);
+
+  useEffect(() => {
+    if (!selectedVideoId) {
+      return;
+    }
+
+    const node = clipSentinelRef.current;
     if (!node) {
+      return;
+    }
+
+    if (!initializedMap[selectedVideoId] || loadingMap[selectedVideoId] || !hasMoreMap[selectedVideoId]) {
       return;
     }
 
@@ -235,15 +427,10 @@ export function LibraryMain({ clips }: LibraryMainProps) {
           return;
         }
 
-        setVisibleCount((prev) => {
-          if (prev >= clips.length) {
-            return prev;
-          }
-          return Math.min(clips.length, prev + VISIBLE_BATCH_SIZE);
-        });
+        void fetchFolderClips(selectedVideoId, true);
       },
       {
-        rootMargin: "400px 0px",
+        rootMargin: "320px 0px",
         threshold: 0,
       }
     );
@@ -251,9 +438,7 @@ export function LibraryMain({ clips }: LibraryMainProps) {
     observer.observe(node);
 
     return () => observer.disconnect();
-  }, [clips.length]);
-
-  const hasMore = visibleCount < clips.length;
+  }, [selectedVideoId, initializedMap, loadingMap, hasMoreMap]);
 
   return (
     <div className="relative z-10 h-full overflow-y-auto px-4 py-6 sm:px-8 sm:py-8">
@@ -263,27 +448,90 @@ export function LibraryMain({ clips }: LibraryMainProps) {
             Clips Library
           </h1>
           <p className="mt-2 text-sm text-[#c3c0bf]">
-            Preview hasil clip final dan download file siap publish.
+            Pilih folder video source untuk melihat clip hasil render.
           </p>
         </div>
 
-        {clips.length === 0 && (
+        {folders.length === 0 && (
           <div className="rounded-xl border border-dashed border-white/20 bg-[#111]/70 p-8 text-center text-[#adaaaa]">
             Belum ada clips. Jalankan pipeline di Dashboard untuk menghasilkan clip.
           </div>
         )}
 
-        {clips.length > 0 && (
+        {folders.length > 0 && (
           <>
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-              {visibleClips.map((clip) => (
-                <LibraryClipCard key={clip.id} clip={clip} />
+              {folders.map((folder) => (
+                <FolderCard
+                  key={folder.videoId}
+                  folder={folder}
+                  isActive={selectedVideoId === folder.videoId}
+                  onSelect={onSelectFolder}
+                />
               ))}
             </div>
-            <div ref={sentinelRef} className="h-1" aria-hidden="true" />
-            {hasMore && (
-              <p className="text-center text-xs text-[#8a8787]">Memuat clip berikutnya...</p>
-            )}
+
+            <section className="rounded-xl border border-white/10 bg-[#101010]/70 p-5 sm:p-6 space-y-5">
+              {!selectedFolder && (
+                <div className="rounded-lg border border-dashed border-white/20 p-8 text-center text-[#9e9a98]">
+                  Klik salah satu folder di atas untuk membuka daftar clip.
+                </div>
+              )}
+
+              {selectedFolder && (
+                <>
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <div>
+                      <h2 className="text-xl font-black text-white uppercase tracking-wide">
+                        Folder: {selectedFolder.video.sourceTitle?.trim() || "Untitled Source"}
+                      </h2>
+                      <p className="text-xs text-[#aaa6a4] mt-1">
+                        {selectedFolder.video.sourcePlatform || "unknown"} • {selectedFolder.clipCount} clip
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedVideoId(null)}
+                      className="rounded-lg px-3 py-1.5 text-xs font-semibold text-[#d5d2d1] border border-white/20 hover:border-white/35"
+                    >
+                      Tutup Folder
+                    </button>
+                  </div>
+
+                  {errorMap[selectedFolder.videoId] && (
+                    <div className="rounded-lg border border-[#ff716c]/30 bg-[#331817]/50 px-4 py-3 text-sm text-[#ffaaa4]">
+                      {errorMap[selectedFolder.videoId]}
+                    </div>
+                  )}
+
+                  {selectedClips.length === 0 && loadingMap[selectedFolder.videoId] && (
+                    <p className="text-sm text-[#a7a3a1]">Memuat clips folder ini...</p>
+                  )}
+
+                  {selectedClips.length > 0 && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
+                      {selectedClips.map((clip) => (
+                        <LibraryClipCard key={clip.id} clip={clip} />
+                      ))}
+                    </div>
+                  )}
+
+                  <div ref={clipSentinelRef} className="h-1" aria-hidden="true" />
+
+                  {loadingMap[selectedFolder.videoId] && selectedClips.length > 0 && (
+                    <p className="text-center text-xs text-[#8a8787]">Memuat clip berikutnya...</p>
+                  )}
+
+                  {!loadingMap[selectedFolder.videoId] && !hasMoreMap[selectedFolder.videoId] && selectedClips.length > 0 && (
+                    <p className="text-center text-xs text-[#7f7b79]">Semua clip pada folder ini sudah ditampilkan.</p>
+                  )}
+
+                  {!loadingMap[selectedFolder.videoId] && selectedClips.length === 0 && initializedMap[selectedFolder.videoId] && !errorMap[selectedFolder.videoId] && (
+                    <p className="text-sm text-[#a7a3a1]">Folder ini belum punya clip siap tampil.</p>
+                  )}
+                </>
+              )}
+            </section>
           </>
         )}
       </div>

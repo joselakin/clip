@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
+import { randomUUID } from "node:crypto";
+import { mkdir, unlink as unlinkFile, writeFile } from "node:fs/promises";
+import path from "node:path";
 
 import { isValidSessionToken, SESSION_COOKIE_NAME } from "@/lib/auth";
 import { createLogger } from "@/lib/logger";
 import { downloadYoutubeVideoToLocal, removeDownloadedFile } from "@/lib/youtube";
 import { prisma } from "@/lib/prisma";
+import { resolveStoragePath } from "@/lib/storage";
 
 export const runtime = "nodejs";
 const logger = createLogger("api/videos/import-youtube");
@@ -13,8 +17,101 @@ function getExtensionFromStorageKey(storageKey: string): string {
   return parts.length > 1 ? parts[parts.length - 1] : "mp4";
 }
 
+function sanitizeFilename(filename: string): string {
+  return filename.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 120) || "watermark";
+}
+
+function asObject(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function imageExtensionFromFilename(filename: string, mimeType?: string): string {
+  const ext = path.extname(filename).replace(".", "").toLowerCase();
+  if (["png", "jpg", "jpeg", "webp"].includes(ext)) {
+    return ext;
+  }
+
+  if (mimeType === "image/png") {
+    return "png";
+  }
+  if (mimeType === "image/webp") {
+    return "webp";
+  }
+  return "jpg";
+}
+
+function buildWatermarkStorageKey(filename: string, mimeType?: string): string {
+  const safe = sanitizeFilename(filename);
+  const ext = imageExtensionFromFilename(safe, mimeType);
+  const base = safe.replace(new RegExp(`\\.${ext}$`, "i"), "") || "watermark";
+  return `watermarks/${Date.now()}-${base}-${randomUUID().slice(0, 8)}.${ext}`;
+}
+
+async function persistWatermarkLogo(file: File): Promise<string> {
+  if (!file.type.startsWith("image/")) {
+    throw new Error("File logo watermark harus berupa gambar");
+  }
+
+  const maxImageBytes = 8 * 1024 * 1024;
+  if (file.size > maxImageBytes) {
+    throw new Error("Ukuran logo watermark maksimal 8MB");
+  }
+
+  const storageKey = buildWatermarkStorageKey(file.name, file.type || undefined);
+  const outputPath = resolveStoragePath(storageKey);
+  const bytes = Buffer.from(await file.arrayBuffer());
+
+  await mkdir(path.dirname(outputPath), { recursive: true });
+  await writeFile(outputPath, bytes);
+
+  return storageKey;
+}
+
+type WatermarkInput = {
+  renderLayout: "standard" | "framed";
+  text: string | null;
+  logoFile: File | null;
+};
+
+async function parseIncomingBody(request: NextRequest): Promise<{
+  url: string;
+  watermark: WatermarkInput;
+}> {
+  const contentType = request.headers.get("content-type") || "";
+
+  if (contentType.includes("application/json")) {
+    const body = (await request.json()) as { url?: string; watermarkText?: string; renderLayout?: string };
+    const layoutRaw = String(body.renderLayout || "standard").trim().toLowerCase();
+    return {
+      url: body.url?.trim() ?? "",
+      watermark: {
+        renderLayout: layoutRaw === "framed" ? "framed" : "standard",
+        text: String(body.watermarkText || "").trim().slice(0, 120) || null,
+        logoFile: null,
+      },
+    };
+  }
+
+  const form = await request.formData();
+  const logoCandidate = form.get("watermarkLogo");
+  const layoutRaw = String(form.get("renderLayout") || "standard").trim().toLowerCase();
+
+  return {
+    url: String(form.get("url") || "").trim(),
+    watermark: {
+      renderLayout: layoutRaw === "framed" ? "framed" : "standard",
+      text: String(form.get("watermarkText") || "").trim().slice(0, 120) || null,
+      logoFile: logoCandidate instanceof File && logoCandidate.size > 0 ? logoCandidate : null,
+    },
+  };
+}
+
 export async function POST(request: NextRequest) {
   let downloadedPathForCleanup: string | null = null;
+  let watermarkPathForCleanup: string | null = null;
 
   try {
     logger.info("request_received");
@@ -25,8 +122,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: false, message: "Unauthorized" }, { status: 401 });
     }
 
-    const body = (await request.json()) as { url?: string };
-    const url = body.url?.trim() ?? "";
+    const payload = await parseIncomingBody(request);
+    const url = payload.url;
 
     if (!url) {
       logger.warn("validation_failed_missing_url");
@@ -49,6 +146,39 @@ export async function POST(request: NextRequest) {
     });
 
     if (existing) {
+      const watermarkLogoStorageKey = payload.watermark.logoFile
+        ? await persistWatermarkLogo(payload.watermark.logoFile)
+        : null;
+
+      if (watermarkLogoStorageKey) {
+        watermarkPathForCleanup = resolveStoragePath(watermarkLogoStorageKey);
+      }
+
+      const oldMetadata = asObject(existing.metadata) || {};
+      await prisma.video.update({
+        where: { id: existing.id },
+        data: {
+          metadata: {
+            ...oldMetadata,
+            renderLayout: payload.watermark.renderLayout,
+            watermark:
+              payload.watermark.text || watermarkLogoStorageKey
+                ? {
+                    enabled: true,
+                    text: payload.watermark.text,
+                    logoStorageKey: watermarkLogoStorageKey,
+                    opacity: 0.16,
+                    position: "center",
+                    updatedAt: new Date().toISOString(),
+                  }
+                : {
+                    enabled: false,
+                    updatedAt: new Date().toISOString(),
+                  },
+          },
+        },
+      });
+
       logger.info("deduplication_hit", { existingVideoId: existing.id, sha256: downloaded.sha256 });
       await removeDownloadedFile(downloaded.outputPath);
       return NextResponse.json({
@@ -61,6 +191,14 @@ export async function POST(request: NextRequest) {
           durationMs: existing.durationMs,
         },
       });
+    }
+
+    const watermarkLogoStorageKey = payload.watermark.logoFile
+      ? await persistWatermarkLogo(payload.watermark.logoFile)
+      : null;
+
+    if (watermarkLogoStorageKey) {
+      watermarkPathForCleanup = resolveStoragePath(watermarkLogoStorageKey);
     }
 
     const created = await prisma.video.create({
@@ -88,6 +226,19 @@ export async function POST(request: NextRequest) {
           source: "youtube",
           channelName: downloaded.channelName,
           importedAt: new Date().toISOString(),
+          renderLayout: payload.watermark.renderLayout,
+          ...(payload.watermark.text || watermarkLogoStorageKey
+            ? {
+                watermark: {
+                  enabled: true,
+                  text: payload.watermark.text,
+                  logoStorageKey: watermarkLogoStorageKey,
+                  opacity: 0.16,
+                  position: "center",
+                  updatedAt: new Date().toISOString(),
+                },
+              }
+            : {}),
         },
       },
     });
@@ -112,6 +263,11 @@ export async function POST(request: NextRequest) {
     if (downloadedPathForCleanup) {
       await removeDownloadedFile(downloadedPathForCleanup);
       logger.warn("cleanup_downloaded_file_after_error", { downloadedPathForCleanup });
+    }
+
+    if (watermarkPathForCleanup) {
+      await unlinkFile(watermarkPathForCleanup).catch(() => undefined);
+      logger.warn("cleanup_watermark_file_after_error", { watermarkPathForCleanup });
     }
 
     const message = error instanceof Error ? error.message : "Gagal memproses URL YouTube";

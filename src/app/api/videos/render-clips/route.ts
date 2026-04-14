@@ -2,6 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { NextRequest, NextResponse } from "next/server";
+import { stat } from "node:fs/promises";
 
 import { isValidSessionToken, SESSION_COOKIE_NAME } from "@/lib/auth";
 import { computeFaceCropPlan } from "@/lib/face-crop";
@@ -31,6 +32,65 @@ function buildTranscriptSnapshot(
     .filter((text) => text.length > 0);
 
   return parts.join(" ").slice(0, 8000) || "";
+}
+
+type VideoWatermarkConfig = {
+  renderLayout: "standard" | "framed";
+  text: string | null;
+  logoStorageKey: string | null;
+  opacity: number;
+};
+
+function asObject(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function parseWatermarkConfig(metadata: unknown): VideoWatermarkConfig | null {
+  const root = asObject(metadata);
+  const renderLayout = root?.renderLayout === "framed" ? "framed" : "standard";
+  const wm = asObject(root?.watermark);
+  if (!wm) {
+    return {
+      renderLayout,
+      text: null,
+      logoStorageKey: null,
+      opacity: 0.16,
+    };
+  }
+
+  const enabled = wm.enabled !== false;
+  if (!enabled) {
+    return {
+      renderLayout,
+      text: null,
+      logoStorageKey: null,
+      opacity: 0.16,
+    };
+  }
+
+  const text = typeof wm.text === "string" ? wm.text.trim() : "";
+  const logoStorageKey = typeof wm.logoStorageKey === "string" ? wm.logoStorageKey.trim() : "";
+  const rawOpacity = Number(wm.opacity);
+  const opacity = Number.isFinite(rawOpacity) ? Math.max(0.05, Math.min(0.5, rawOpacity)) : 0.16;
+
+  if (!text && !logoStorageKey) {
+    return {
+      renderLayout,
+      text: null,
+      logoStorageKey: null,
+      opacity,
+    };
+  }
+
+  return {
+    renderLayout,
+    text: text || null,
+    logoStorageKey: logoStorageKey || null,
+    opacity,
+  };
 }
 
 export async function POST(request: NextRequest) {
@@ -82,6 +142,22 @@ export async function POST(request: NextRequest) {
       wordsJson: true,
     },
   });
+
+  const watermarkConfig = parseWatermarkConfig(video.metadata);
+  let watermarkLogoPath: string | null = null;
+
+  if (watermarkConfig?.logoStorageKey) {
+    const resolved = resolveStoragePath(watermarkConfig.logoStorageKey);
+    try {
+      await stat(resolved);
+      watermarkLogoPath = resolved;
+    } catch {
+      logger.warn("watermark_logo_missing", {
+        videoId,
+        logoStorageKey: watermarkConfig.logoStorageKey,
+      });
+    }
+  }
 
   let jobId = "";
 
@@ -179,7 +255,13 @@ export async function POST(request: NextRequest) {
         await writeFile(subtitlePath, buildAss(subtitleEntries), "utf8");
       }
 
-      await cutClipFromVideo(portraitPath, clipPath, candidate.startMs, candidate.endMs, subtitlePath);
+      await cutClipFromVideo(portraitPath, clipPath, candidate.startMs, candidate.endMs, {
+        subtitlePath,
+        watermarkText: watermarkConfig?.text,
+        watermarkLogoPath,
+        watermarkOpacity: watermarkConfig?.opacity,
+        renderLayout: watermarkConfig?.renderLayout,
+      });
 
       const thumbnailKey = buildThumbnailStorageKey(
         video.id,

@@ -5,6 +5,12 @@ type VideoSourceInputProps = {
   onChange: (value: string) => void;
   onFileSelect?: (file: File | null) => void;
   selectedFileName?: string | null;
+  renderLayoutMode?: "standard" | "framed";
+  onRenderLayoutModeChange?: (value: "standard" | "framed") => void;
+  watermarkText?: string;
+  onWatermarkTextChange?: (value: string) => void;
+  onWatermarkLogoSelect?: (file: File | null) => void;
+  selectedWatermarkLogoName?: string | null;
   disabled?: boolean;
 };
 
@@ -13,11 +19,17 @@ export function VideoSourceInput({
   onChange,
   onFileSelect,
   selectedFileName,
+  renderLayoutMode = "standard",
+  onRenderLayoutModeChange,
+  watermarkText = "",
+  onWatermarkTextChange,
+  onWatermarkLogoSelect,
+  selectedWatermarkLogoName,
   disabled = false,
 }: VideoSourceInputProps) {
   return (
     <div className="relative group">
-      <div className="absolute -inset-0.5 bg-gradient-to-r from-[#85adff]/20 to-[#0c70ea]/20 rounded-2xl blur opacity-30 group-focus-within:opacity-100 transition duration-1000 group-focus-within:duration-200" />
+      <div className="absolute -inset-0.5 bg-gradient-to-r from-[#85adff]/20 to-[#0c70ea]/20 rounded-2xl blur opacity-30 group-focus-within:opacity-100 transition duration-1000 group-focus-within:duration-200 pointer-events-none" />
       <div className="relative flex items-center bg-surface-container-high rounded-2xl p-2 shadow-2xl">
         <div className="flex-1 flex items-center px-6">
           <MaterialIcon name="link" className="text-[#adaaaa] mr-4" />
@@ -57,6 +69,86 @@ export function VideoSourceInput({
           Selected file: {selectedFileName}
         </p>
       )}
+
+      <div className="mt-4 rounded-xl border border-white/10 bg-[#121212]/80 p-4 space-y-3">
+        <p className="text-xs font-semibold uppercase tracking-wide text-[#c3c0bf]">Layout Render</p>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => onRenderLayoutModeChange?.("standard")}
+            className={`rounded-lg px-3 py-2 text-xs font-bold uppercase tracking-wide border transition-colors ${
+              renderLayoutMode === "standard"
+                ? "border-[#85adff]/70 bg-[#1a2640] text-[#9dc0ff]"
+                : "border-white/15 bg-[#171717] text-[#bcb8b6] hover:border-white/30"
+            }`}
+          >
+            Layout Biasa
+          </button>
+
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => onRenderLayoutModeChange?.("framed")}
+            className={`rounded-lg px-3 py-2 text-xs font-bold uppercase tracking-wide border transition-colors ${
+              renderLayoutMode === "framed"
+                ? "border-[#85adff]/70 bg-[#1a2640] text-[#9dc0ff]"
+                : "border-white/15 bg-[#171717] text-[#bcb8b6] hover:border-white/30"
+            }`}
+          >
+            Layout Frame
+          </button>
+        </div>
+
+        <p className="text-[11px] text-[#8f8b89]">
+          Frame: area watermark atas, konten di tengah, subtitle di bawah, dengan background hitam.
+        </p>
+      </div>
+
+      <div className="mt-4 rounded-xl border border-white/10 bg-[#121212]/80 p-4 space-y-3">
+        <p className="text-xs font-semibold uppercase tracking-wide text-[#c3c0bf]">
+          Optional Watermark
+        </p>
+
+        <input
+          className="w-full bg-[#1a1a1a] border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-[#666] focus:outline-none focus:ring-2 focus:ring-[#85adff]/30"
+          placeholder="Watermark teks (contoh: @brandkamu)"
+          type="text"
+          value={watermarkText}
+          onChange={(event) => onWatermarkTextChange?.(event.target.value)}
+          disabled={disabled}
+          maxLength={120}
+        />
+
+        <div className="flex items-center gap-3">
+          <label
+            htmlFor="dashboard-watermark-logo"
+            className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold border border-white/20 text-[#d2d0cf] hover:border-[#85adff]/60 cursor-pointer transition-colors"
+          >
+            <MaterialIcon name="image" className="text-[#85adff]" />
+            Upload Logo Watermark
+          </label>
+          <input
+            id="dashboard-watermark-logo"
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            className="hidden"
+            disabled={disabled}
+            onChange={(event) => {
+              const file = event.target.files?.[0] || null;
+              onWatermarkLogoSelect?.(file);
+            }}
+          />
+          {selectedWatermarkLogoName && (
+            <span className="text-xs text-[#85adff] font-semibold">{selectedWatermarkLogoName}</span>
+          )}
+        </div>
+
+        <p className="text-[11px] text-[#8f8b89]">
+          Watermark akan ditempatkan di tengah video dengan opacity rendah agar tidak mengganggu konten.
+        </p>
+      </div>
     </div>
   );
 }

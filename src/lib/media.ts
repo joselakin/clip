@@ -33,6 +33,14 @@ export type TranscriptionAudioChunk = {
   endMs: number;
 };
 
+export type ClipWatermarkOptions = {
+  subtitlePath?: string;
+  watermarkText?: string | null;
+  watermarkLogoPath?: string | null;
+  watermarkOpacity?: number;
+  renderLayout?: "standard" | "framed";
+};
+
 function escapeForFfmpegSubtitlesPath(filePath: string): string {
   return filePath
     .replace(/\\/g, "/")
@@ -56,6 +64,62 @@ function buildSubtitleFilterArg(subtitlePath: string): string {
     : path.join(process.cwd(), configuredFontsDir);
   const escapedFontsDir = escapeForFfmpegSubtitlesPath(fontsDir);
   return `subtitles=${escapedSubtitlePath}:fontsdir=${escapedFontsDir}`;
+}
+
+function clampOpacity(value?: number): number {
+  const raw = typeof value === "number" ? value : 0.16;
+  if (!Number.isFinite(raw)) {
+    return 0.16;
+  }
+  return Math.max(0.05, Math.min(0.5, raw));
+}
+
+function escapeDrawtextText(input: string): string {
+  return input
+    .replace(/\\/g, "\\\\")
+    .replace(/:/g, "\\:")
+    .replace(/'/g, "\\'")
+    .replace(/%/g, "\\%")
+    .replace(/\r?\n/g, " ");
+}
+
+function buildDrawtextFilter(text: string, opacity: number): string {
+  const safeText = escapeDrawtextText(text.trim());
+  return `drawtext=text='${safeText}':fontcolor=white@${opacity.toFixed(2)}:fontsize=72:x=(w-text_w)/2:y=(h-text_h)/2`;
+}
+
+function buildDrawtextFilterForLayout(
+  text: string,
+  opacity: number,
+  layout: "standard" | "framed"
+): string {
+  if (layout === "framed") {
+    const safeText = escapeDrawtextText(text.trim());
+    return `drawtext=text='${safeText}':fontcolor=white@${Math.min(0.85, opacity + 0.2).toFixed(2)}:fontsize=58:borderw=2:bordercolor=black@0.45:x=(w-text_w)/2:y=166`;
+  }
+
+  return buildDrawtextFilter(text, opacity);
+}
+
+function buildFramedLayoutFilters(): string[] {
+  const corner = 40;
+  const size = 920;
+
+  const alphaExpr = [
+    `if(lt(X,${corner})*lt(Y,${corner})*gt(pow(X-${corner},2)+pow(Y-${corner},2),pow(${corner},2))`,
+    ` + gt(X,W-${corner}-1)*lt(Y,${corner})*gt(pow(X-(W-${corner}-1),2)+pow(Y-${corner},2),pow(${corner},2))`,
+    ` + lt(X,${corner})*gt(Y,H-${corner}-1)*gt(pow(X-${corner},2)+pow(Y-(H-${corner}-1),2),pow(${corner},2))`,
+    ` + gt(X,W-${corner}-1)*gt(Y,H-${corner}-1)*gt(pow(X-(W-${corner}-1),2)+pow(Y-(H-${corner}-1),2),pow(${corner},2))`,
+    `,0,255)`,
+  ].join("");
+
+  return [
+    `scale=${size}:${size}:force_original_aspect_ratio=decrease`,
+    `pad=${size}:${size}:(ow-iw)/2:(oh-ih)/2:black`,
+    "format=rgba",
+    `geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='${alphaExpr}'`,
+    "pad=1080:1920:(ow-iw)/2:430:black",
+  ];
 }
 
 function getFfmpegBin(): string {
@@ -289,9 +353,24 @@ export async function cutClipFromVideo(
   outputPath: string,
   startMs: number,
   endMs: number,
-  subtitlePath?: string
+  options?: ClipWatermarkOptions
 ) {
-  logger.info("cut_clip_started", { inputPath, outputPath, startMs, endMs, subtitleEnabled: Boolean(subtitlePath) });
+  const subtitlePath = options?.subtitlePath;
+  const watermarkText = options?.watermarkText?.trim() || "";
+  const watermarkLogoPath = options?.watermarkLogoPath?.trim() || "";
+  const opacity = clampOpacity(options?.watermarkOpacity);
+  const renderLayout = options?.renderLayout === "framed" ? "framed" : "standard";
+
+  logger.info("cut_clip_started", {
+    inputPath,
+    outputPath,
+    startMs,
+    endMs,
+    subtitleEnabled: Boolean(subtitlePath),
+    watermarkTextEnabled: Boolean(watermarkText),
+    watermarkLogoEnabled: Boolean(watermarkLogoPath),
+    renderLayout,
+  });
   await mkdir(path.dirname(outputPath), { recursive: true });
 
   const startSec = Math.max(0, startMs / 1000).toFixed(3);
@@ -307,8 +386,57 @@ export async function cutClipFromVideo(
     durationSec,
   ];
 
+  const filters: string[] = [];
+  if (renderLayout === "framed") {
+    filters.push(...buildFramedLayoutFilters());
+  }
+
   if (subtitlePath) {
-    args.push("-vf", buildSubtitleFilterArg(subtitlePath));
+    filters.push(buildSubtitleFilterArg(subtitlePath));
+  }
+  if (watermarkText) {
+    filters.push(buildDrawtextFilterForLayout(watermarkText, opacity, renderLayout));
+  }
+
+  if (watermarkLogoPath) {
+    args.push("-i", watermarkLogoPath);
+
+    const graphParts: string[] = [];
+    let current = "0:v";
+    let labelIndex = 0;
+
+    for (const filter of filters) {
+      const outLabel = `v${labelIndex + 1}`;
+      graphParts.push(`[${current}]${filter}[${outLabel}]`);
+      current = outLabel;
+      labelIndex += 1;
+    }
+
+    const logoOpacity = opacity.toFixed(2);
+    const logoScale =
+      renderLayout === "framed"
+        ? "scale=360:110:force_original_aspect_ratio=decrease"
+        : "scale='if(gt(iw,486),486,iw)':-1";
+    const logoOverlay =
+      renderLayout === "framed" ? "overlay=(W-w)/2:140:format=auto" : "overlay=(W-w)/2:(H-h)/2:format=auto";
+
+    graphParts.push(
+      `[1:v]${logoScale},format=rgba,colorchannelmixer=aa=${logoOpacity}[wm]`
+    );
+
+    const outLabel = `v${labelIndex + 1}`;
+    graphParts.push(`[${current}][wm]${logoOverlay}[${outLabel}]`);
+
+    args.push(
+      "-filter_complex",
+      graphParts.join(";"),
+      "-map",
+      `[${outLabel}]`,
+      "-map",
+      "0:a?"
+    );
+  } else if (filters.length > 0) {
+    args.push("-vf", filters.join(","));
   }
 
   args.push(
