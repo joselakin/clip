@@ -31,7 +31,12 @@ export default async function LibraryPage() {
       outputFileKey: true,
       thumbnailKey: true,
       subtitleMode: true,
-      createdAt: true,
+      highlightCandidate: {
+        select: {
+          scoreTotal: true,
+          reasonJson: true,
+        },
+      },
       video: {
         select: {
           id: true,
@@ -43,9 +48,31 @@ export default async function LibraryPage() {
     },
   });
 
+  const serializedClips = clips.map((clip) => {
+    const scorePercent = clip.highlightCandidate
+      ? Math.round(Number(clip.highlightCandidate.scoreTotal) * 100)
+      : null;
+
+    return {
+      id: clip.id,
+      startMs: clip.startMs,
+      endMs: clip.endMs,
+      outputFileKey: clip.outputFileKey,
+      thumbnailKey: clip.thumbnailKey,
+      subtitleMode: clip.subtitleMode,
+      highlight: clip.highlightCandidate
+        ? {
+            scorePercent,
+            reasonJson: clip.highlightCandidate.reasonJson,
+          }
+        : null,
+      video: clip.video,
+    };
+  });
+
   return (
     <DashboardShell activeSection="library">
-      <LibraryMain clips={clips} />
+      <LibraryMain clips={serializedClips} />
     </DashboardShell>
   );
 }

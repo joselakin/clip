@@ -1,13 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
+import { stat } from "node:fs/promises";
+import path from "node:path";
 
+import type { GroqSegment, GroqTranscriptionResponse, GroqWord } from "@/lib/groq";
 import { isValidSessionToken, SESSION_COOKIE_NAME } from "@/lib/auth";
 import { decryptSecret } from "@/lib/crypto";
 import { transcribeAudioWithGroq } from "@/lib/groq";
 import { createLogger } from "@/lib/logger";
-import { extractAudioForTranscription } from "@/lib/media";
+import { extractAudioForTranscription, splitAudioForTranscription } from "@/lib/media";
 import { prisma } from "@/lib/prisma";
-import { buildAudioStorageKey, resolveStoragePath } from "@/lib/storage";
+import { buildAudioStorageKey, getStorageRootDir, resolveStoragePath } from "@/lib/storage";
 
 export const runtime = "nodejs";
 const logger = createLogger("api/videos/transcribe");
@@ -17,6 +20,41 @@ function toMs(value?: number): number {
     return 0;
   }
   return Math.round(value * 1000);
+}
+
+function getMaxGroqTranscribeUploadBytes(): number {
+  const configured = Number(process.env.GROQ_TRANSCRIBE_MAX_UPLOAD_BYTES || "");
+  if (Number.isFinite(configured) && configured > 0) {
+    return Math.floor(configured);
+  }
+  return 24 * 1024 * 1024;
+}
+
+function getGroqTranscribeChunkSeconds(): number {
+  const configured = Number(process.env.GROQ_TRANSCRIBE_CHUNK_SECONDS || "");
+  if (Number.isFinite(configured) && configured >= 30) {
+    return Math.floor(configured);
+  }
+  return 8 * 60;
+}
+
+function shiftWordByOffset(word: GroqWord, offsetMs: number): GroqWord {
+  return {
+    ...word,
+    start: typeof word.start === "number" ? Math.max(0, word.start + offsetMs / 1000) : word.start,
+    end: typeof word.end === "number" ? Math.max(0, word.end + offsetMs / 1000) : word.end,
+  };
+}
+
+function shiftSegmentByOffset(segment: GroqSegment, offsetMs: number): GroqSegment {
+  return {
+    ...segment,
+    start: typeof segment.start === "number" ? Math.max(0, segment.start + offsetMs / 1000) : segment.start,
+    end: typeof segment.end === "number" ? Math.max(0, segment.end + offsetMs / 1000) : segment.end,
+    words: Array.isArray(segment.words)
+      ? segment.words.map((word) => shiftWordByOffset(word, offsetMs))
+      : segment.words,
+  };
 }
 
 export async function POST(request: NextRequest) {
@@ -103,15 +141,77 @@ export async function POST(request: NextRequest) {
       jobId,
       model: process.env.GROQ_TRANSCRIBE_MODEL?.trim() || "whisper-large-v3-turbo",
     });
-    const { model, result } = await transcribeAudioWithGroq(audioPath, apiKey);
+    const maxUploadBytes = getMaxGroqTranscribeUploadBytes();
+    const chunkSeconds = getGroqTranscribeChunkSeconds();
+    const audioStat = await stat(audioPath);
+
+    const transcriptionParts: Array<{ offsetMs: number; result: GroqTranscriptionResponse }> = [];
+    let model = process.env.GROQ_TRANSCRIBE_MODEL?.trim() || "whisper-large-v3-turbo";
+
+    if (audioStat.size <= maxUploadBytes) {
+      const single = await transcribeAudioWithGroq(audioPath, apiKey);
+      model = single.model;
+      transcriptionParts.push({ offsetMs: 0, result: single.result });
+      logger.info("groq_transcription_single_request", {
+        jobId,
+        model,
+        audioBytes: audioStat.size,
+      });
+    } else {
+      const chunksDir = path.join(
+        getStorageRootDir(),
+        "audio",
+        `${video.id}-chunks-${Date.now()}`
+      );
+
+      const chunks = await splitAudioForTranscription(audioPath, chunksDir, chunkSeconds);
+      if (chunks.length === 0) {
+        throw new Error("Gagal membagi audio untuk transkripsi chunk.");
+      }
+
+      logger.info("groq_transcription_chunk_mode", {
+        jobId,
+        model,
+        audioBytes: audioStat.size,
+        maxUploadBytes,
+        chunkSeconds,
+        chunks: chunks.length,
+      });
+
+      for (const chunk of chunks) {
+        const chunkResult = await transcribeAudioWithGroq(chunk.path, apiKey);
+        model = chunkResult.model;
+        transcriptionParts.push({
+          offsetMs: chunk.startMs,
+          result: chunkResult.result,
+        });
+      }
+    }
+
+    const rawSegments = transcriptionParts.flatMap((part) => {
+      const base = part.result.segments || [];
+      return base.map((segment) => shiftSegmentByOffset(segment, part.offsetMs));
+    });
+
+    const mergedLanguage =
+      transcriptionParts
+        .map((part) => part.result.language)
+        .find((language) => typeof language === "string" && language.trim().length > 0) || null;
+
+    const mergedText = transcriptionParts
+      .map((part) => (part.result.text || "").trim())
+      .filter((text) => text.length > 0)
+      .join(" ")
+      .trim();
+
     logger.info("groq_transcription_completed", {
       jobId,
       model,
-      segments: result.segments?.length || 0,
-      language: result.language || null,
+      segments: rawSegments.length,
+      language: mergedLanguage,
+      chunkRequests: transcriptionParts.length,
     });
 
-    const rawSegments = result.segments ?? [];
     const preparedSegments = rawSegments
       .map((segment) => {
         const startMs = toMs(segment.start);
@@ -124,7 +224,7 @@ export async function POST(request: NextRequest) {
           startMs,
           endMs,
           text: (segment.text || "").trim() || "[no text]",
-          language: result.language || null,
+          language: mergedLanguage,
           confidence: typeof segment.avg_logprob === "number" ? segment.avg_logprob : null,
           speakerLabel: null,
           sttProvider: "groq" as const,
@@ -148,8 +248,8 @@ export async function POST(request: NextRequest) {
               jobId,
               startMs: 0,
               endMs: Math.max(1, Math.min(video.durationMs, 2000)),
-              text: (result.text || "").trim() || "[no transcript text]",
-              language: result.language || null,
+              text: mergedText || "[no transcript text]",
+              language: mergedLanguage,
               confidence: null,
               speakerLabel: null,
               sttProvider: "groq" as const,
@@ -157,7 +257,7 @@ export async function POST(request: NextRequest) {
               wordsJson: [],
               segmentRaw: {
                 fallback: true,
-                text: result.text || null,
+                text: mergedText || null,
               } as Prisma.InputJsonValue,
             },
           ];
@@ -209,7 +309,7 @@ export async function POST(request: NextRequest) {
           result: {
             segmentsCount: fallbackSegments.length,
             audioStorageKey,
-            fullText: result.text || null,
+            fullText: mergedText || null,
           },
         },
       });
@@ -228,7 +328,7 @@ export async function POST(request: NextRequest) {
       transcript: {
         model,
         segmentsCount: fallbackSegments.length,
-        textPreview: (result.text || "").slice(0, 160),
+        textPreview: mergedText.slice(0, 160),
         segments: fallbackSegments.slice(0, 12).map((segment) => ({
           startMs: segment.startMs,
           endMs: segment.endMs,

@@ -15,6 +15,8 @@ const MAX_WORDS_PER_ENTRY = 4;
 const MAX_ENTRY_DURATION_MS = 2600;
 const MAX_GAP_INSIDE_ENTRY_MS = 450;
 const MIN_ENTRY_DURATION_MS = 280;
+const MAX_LINES_PER_ENTRY = 2;
+const MAX_CHARS_PER_LINE = 18;
 
 function pad(num: number, size = 2): string {
   return String(num).padStart(size, "0");
@@ -153,6 +155,8 @@ function buildKaraokeTextFromWords(
 ): string {
   let cursor = entryStartMs;
   let output = "";
+  let lineCount = 1;
+  let currentLineChars = 0;
 
   words.forEach((word, wordIndex) => {
     if (word.startMs > cursor) {
@@ -160,18 +164,33 @@ function buildKaraokeTextFromWords(
     }
 
     const safeWord = escapeAssText(word.text).toUpperCase();
+    const nextWordLength = safeWord.length;
+    const expectedLineLength = currentLineChars + (currentLineChars > 0 ? 1 : 0) + nextWordLength;
+
+    const shouldBreakLine =
+      currentLineChars > 0 &&
+      lineCount < MAX_LINES_PER_ENTRY &&
+      expectedLineLength > MAX_CHARS_PER_LINE;
+
+    if (shouldBreakLine) {
+      output += "\\N";
+      lineCount += 1;
+      currentLineChars = 0;
+    }
+
     const needsSpace =
-      output.length > 0 &&
-      !output.endsWith(" ") &&
+      currentLineChars > 0 &&
       !isPunctuationToken(safeWord) &&
       wordIndex > 0;
 
     if (needsSpace) {
       output += " ";
+      currentLineChars += 1;
     }
 
     const duration = Math.max(40, word.endMs - word.startMs);
     output += `{\\k${toCentiseconds(duration)}}${safeWord}`;
+    currentLineChars += nextWordLength;
     cursor = Math.max(cursor, word.endMs);
   });
 

@@ -27,6 +27,12 @@ type ProbedMediaMetadata = {
   channels: number | null;
 };
 
+export type TranscriptionAudioChunk = {
+  path: string;
+  startMs: number;
+  endMs: number;
+};
+
 function escapeForFfmpegSubtitlesPath(filePath: string): string {
   return filePath
     .replace(/\\/g, "/")
@@ -180,6 +186,69 @@ export async function extractAudioForTranscription(inputPath: string, outputPath
     );
   });
   logger.info("extract_audio_completed", { outputPath });
+}
+
+export async function splitAudioForTranscription(
+  inputAudioPath: string,
+  outputDir: string,
+  chunkDurationSec = 8 * 60
+): Promise<TranscriptionAudioChunk[]> {
+  const metadata = await probeVideoMetadata(inputAudioPath);
+  const durationMs = metadata.durationMs;
+
+  if (durationMs <= 0) {
+    return [];
+  }
+
+  await mkdir(outputDir, { recursive: true });
+
+  const chunkMs = Math.max(30_000, Math.floor(chunkDurationSec * 1000));
+  const chunks: TranscriptionAudioChunk[] = [];
+
+  logger.info("split_audio_started", {
+    inputAudioPath,
+    outputDir,
+    durationMs,
+    chunkMs,
+  });
+
+  let partIndex = 1;
+  for (let startMs = 0; startMs < durationMs; startMs += chunkMs, partIndex += 1) {
+    const endMs = Math.min(durationMs, startMs + chunkMs);
+    const outputPath = path.join(outputDir, `chunk-${String(partIndex).padStart(3, "0")}.wav`);
+
+    await runFfmpeg([
+      "-y",
+      "-ss",
+      (startMs / 1000).toFixed(3),
+      "-i",
+      inputAudioPath,
+      "-t",
+      Math.max(0.2, (endMs - startMs) / 1000).toFixed(3),
+      "-ac",
+      "1",
+      "-ar",
+      "16000",
+      "-c:a",
+      "pcm_s16le",
+      outputPath,
+    ]).catch(() => {
+      throw new Error("Gagal memotong audio untuk transkripsi chunk.");
+    });
+
+    chunks.push({
+      path: outputPath,
+      startMs,
+      endMs,
+    });
+  }
+
+  logger.info("split_audio_completed", {
+    inputAudioPath,
+    chunks: chunks.length,
+  });
+
+  return chunks;
 }
 
 export async function cropVideoToPortrait(

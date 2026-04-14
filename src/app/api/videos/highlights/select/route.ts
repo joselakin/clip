@@ -3,7 +3,7 @@ import { Prisma } from "@prisma/client";
 
 import { isValidSessionToken, SESSION_COOKIE_NAME } from "@/lib/auth";
 import { decryptSecret } from "@/lib/crypto";
-import { selectHighlightsWithGroq } from "@/lib/groq";
+import { evaluateClipRecommendationsWithGroq, selectHighlightsWithGroq } from "@/lib/groq";
 import { createLogger } from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 
@@ -33,6 +33,33 @@ function enforceDuration(startMs: number, endMs: number): { startMs: number; end
 
   return { startMs: start, endMs: end };
 }
+
+function evalKey(startMs: number, endMs: number): string {
+  return `${Math.round(startMs)}-${Math.round(endMs)}`;
+}
+
+type ClipEvaluationReview = {
+  recommendedTitle: string;
+  overallScore: number;
+  hookScore: number;
+  valueScore: number;
+  clarityScore: number;
+  emotionScore: number;
+  shareabilityScore: number;
+  whyThisWorks: string;
+  improvementTip: string;
+  angle?: string;
+};
+
+type NormalizedCandidate = {
+  startMs: number;
+  endMs: number;
+  scoreTotal: number;
+  scoreText: number;
+  reason: string;
+  topic?: string;
+  review: ClipEvaluationReview;
+};
 
 export async function POST(request: NextRequest) {
   logger.info("request_received");
@@ -130,7 +157,7 @@ export async function POST(request: NextRequest) {
       candidateCount: selection.candidates.length,
     });
 
-    const normalizedCandidates = selection.candidates.slice(0, 6).map((candidate) => {
+    const baseCandidates = selection.candidates.slice(0, 6).map((candidate) => {
       const durationAligned = enforceDuration(candidate.startMs, candidate.endMs);
       return {
         ...candidate,
@@ -138,6 +165,60 @@ export async function POST(request: NextRequest) {
         scoreTotal: clamp(candidate.scoreTotal, 0, 1),
         scoreText: clamp(candidate.scoreText, 0, 1),
       };
+    });
+
+    logger.info("clip_evaluation_started", {
+      jobId,
+      model: process.env.GROQ_HIGHLIGHT_MODEL?.trim() || "gpt-oss-120b",
+      candidateCount: baseCandidates.length,
+    });
+    const evaluation = await evaluateClipRecommendationsWithGroq(
+      transcriptSegments,
+      baseCandidates,
+      apiKey
+    );
+
+    const reviewMap = new Map<string, ClipEvaluationReview>();
+    for (const row of evaluation.evaluations) {
+      reviewMap.set(evalKey(row.startMs, row.endMs), {
+        recommendedTitle: row.recommendedTitle,
+        overallScore: row.overallScore,
+        hookScore: row.hookScore,
+        valueScore: row.valueScore,
+        clarityScore: row.clarityScore,
+        emotionScore: row.emotionScore,
+        shareabilityScore: row.shareabilityScore,
+        whyThisWorks: row.whyThisWorks,
+        improvementTip: row.improvementTip,
+        angle: row.angle,
+      });
+    }
+
+    const normalizedCandidates: NormalizedCandidate[] = baseCandidates.map((candidate) => {
+      const review =
+        reviewMap.get(evalKey(candidate.startMs, candidate.endMs)) || {
+          recommendedTitle: "Momen Penting yang Bikin Penasaran",
+          overallScore: Math.round(candidate.scoreTotal * 100),
+          hookScore: Math.round(candidate.scoreTotal * 100),
+          valueScore: Math.round(candidate.scoreText * 100),
+          clarityScore: Math.round(candidate.scoreText * 100),
+          emotionScore: 72,
+          shareabilityScore: 74,
+          whyThisWorks: candidate.reason,
+          improvementTip: "Perkuat kalimat pembuka agar hook makin cepat terasa.",
+          angle: candidate.topic,
+        };
+
+      return {
+        ...candidate,
+        review,
+      };
+    });
+
+    logger.info("clip_evaluation_completed", {
+      jobId,
+      model: evaluation.model,
+      evaluations: evaluation.evaluations.length,
     });
 
     logger.info("highlight_candidates_normalized", {
@@ -172,6 +253,19 @@ export async function POST(request: NextRequest) {
               model: selection.model,
               reason: candidate.reason,
               topic: candidate.topic || null,
+              clipReview: {
+                model: evaluation.model,
+                recommendedTitle: candidate.review.recommendedTitle,
+                overallScore: candidate.review.overallScore,
+                hookScore: candidate.review.hookScore,
+                valueScore: candidate.review.valueScore,
+                clarityScore: candidate.review.clarityScore,
+                emotionScore: candidate.review.emotionScore,
+                shareabilityScore: candidate.review.shareabilityScore,
+                whyThisWorks: candidate.review.whyThisWorks,
+                improvementTip: candidate.review.improvementTip,
+                angle: candidate.review.angle || null,
+              },
             },
             rankOrder: index + 1,
             isSelected: true,
@@ -188,6 +282,7 @@ export async function POST(request: NextRequest) {
             highlightSelection: {
               provider: "groq",
               model: selection.model,
+              reviewModel: evaluation.model,
               selectedCount: normalizedCandidates.length,
               selectedAt: new Date().toISOString(),
             },
@@ -208,6 +303,7 @@ export async function POST(request: NextRequest) {
           result: {
             selectedCount: normalizedCandidates.length,
             model: selection.model,
+            reviewModel: evaluation.model,
           },
         },
       });
@@ -225,6 +321,7 @@ export async function POST(request: NextRequest) {
       message: "Highlight selection selesai",
       highlights: {
         model: selection.model,
+        reviewModel: evaluation.model,
         candidates: normalizedCandidates,
       },
     });
