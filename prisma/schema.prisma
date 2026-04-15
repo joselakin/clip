@@ -93,6 +93,7 @@ model Video {
   jobs             Job[]
   transcriptSegs   TranscriptSegment[]
   highlights       HighlightCandidate[]
+  highlightSelectionRuns HighlightSelectionRun[] @relation("VideoHighlightSelectionRuns")
   faceTracks       FaceTrack[]
   clips            Clip[]
 
@@ -153,6 +154,7 @@ model Job {
   credential         ApiCredential?       @relation(fields: [credentialId], references: [id], onDelete: SetNull)
   transcriptSegs     TranscriptSegment[]
   highlights         HighlightCandidate[]
+  highlightSelectionRuns HighlightSelectionRun[] @relation("JobHighlightSelectionRuns")
   faceTracks         FaceTrack[]
   renderedClipOutput Clip[]               @relation("RenderJobClips")
 
@@ -202,10 +204,74 @@ model HighlightCandidate {
   updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
   video       Video     @relation(fields: [videoId], references: [id], onDelete: Cascade)
   job         Job?      @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  reviews     HighlightCandidateReview[]      @relation("CandidateReviewHighlightCandidate")
   clips       Clip[]
 
   @@index([videoId, scoreTotal], map: "highlight_candidates_video_id_score_total_idx")
   @@map("highlight_candidates")
+}
+
+model HighlightSelectionRun {
+  id                 String                     @id @default(uuid()) @db.Uuid
+  videoId            String                     @map("video_id") @db.Uuid
+  jobId              String?                    @map("job_id") @db.Uuid
+  pipelineVersion    String                     @map("pipeline_version") @db.VarChar(40)
+  pipelineMode       String                     @map("pipeline_mode") @db.VarChar(20)
+  status             JobStatus                  @default(running)
+  clipCountTarget    Int                        @map("clip_count_target")
+  durationPreset     String                     @map("duration_preset") @db.VarChar(40)
+  maxIterations      Int                        @map("max_iterations")
+  executedIterations Int                        @default(0) @map("executed_iterations")
+  seedCandidateCount Int                        @default(0) @map("seed_candidate_count")
+  passCount          Int                        @default(0) @map("pass_count")
+  failedCount        Int                        @default(0) @map("failed_count")
+  degradedQualityFill Boolean                   @default(false) @map("degraded_quality_fill")
+  tokenUsageJson     Json                       @default("{}") @map("token_usage_json")
+  notesJson          Json                       @default("{}") @map("notes_json")
+  latencyMs          Int?                       @map("latency_ms")
+  errorMessage       String?                    @map("error_message") @db.Text
+  createdAt          DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  finishedAt         DateTime?                  @map("finished_at") @db.Timestamptz(6)
+  video              Video                      @relation("VideoHighlightSelectionRuns", fields: [videoId], references: [id], onDelete: Cascade)
+  job                Job?                       @relation("JobHighlightSelectionRuns", fields: [jobId], references: [id], onDelete: SetNull)
+  reviews            HighlightCandidateReview[] @relation("RunCandidateReviews")
+
+  @@index([videoId, createdAt], map: "highlight_selection_runs_video_id_created_at_idx")
+  @@index([jobId], map: "highlight_selection_runs_job_id_idx")
+  @@index([status, createdAt], map: "highlight_selection_runs_status_created_at_idx")
+  @@map("highlight_selection_runs")
+}
+
+model HighlightCandidateReview {
+  id                   BigInt                @id @default(autoincrement())
+  runId                String                @map("run_id") @db.Uuid
+  highlightCandidateId BigInt?               @map("highlight_candidate_id")
+  iteration            Int
+  action               String                @db.VarChar(20)
+  startMs              Int                   @map("start_ms")
+  endMs                Int                   @map("end_ms")
+  topic                String?               @db.Text
+  overallScore         Int                   @map("overall_score")
+  hookScore            Int                   @map("hook_score")
+  valueScore           Int                   @map("value_score")
+  clarityScore         Int                   @map("clarity_score")
+  emotionScore         Int                   @map("emotion_score")
+  noveltyScore         Int                   @map("novelty_score")
+  shareabilityScore    Int                   @map("shareability_score")
+  isPass               Boolean               @default(false) @map("is_pass")
+  failureReasonsJson   Json                  @default("[]") @map("failure_reasons_json")
+  fixGuidance          String?               @map("fix_guidance") @db.Text
+  modelName            String?               @map("model_name") @db.Text
+  rawJson              Json                  @default("{}") @map("raw_json")
+  createdAt            DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  run                  HighlightSelectionRun @relation("RunCandidateReviews", fields: [runId], references: [id], onDelete: Cascade)
+  highlightCandidate   HighlightCandidate?   @relation("CandidateReviewHighlightCandidate", fields: [highlightCandidateId], references: [id], onDelete: SetNull)
+
+  @@index([runId, iteration], map: "highlight_candidate_reviews_run_id_iteration_idx")
+  @@index([runId, action], map: "highlight_candidate_reviews_run_id_action_idx")
+  @@index([highlightCandidateId], map: "highlight_candidate_reviews_highlight_candidate_id_idx")
+  @@map("highlight_candidate_reviews")
 }
 
 model FaceTrack {

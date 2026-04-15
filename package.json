@@ -7,6 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test:unit": "vitest run",
+    "test:unit:watch": "vitest",
     "py:test:setup": "bash scripts/setup-python-test-env.sh",
     "test:face-crop:python": "[ -x .venv/bin/python ] && .venv/bin/python -m pytest face-detection/tests/test_crop_plan.py || (echo 'Python venv belum siap. Jalankan: npm run py:test:setup' && exit 1)",
     "test:youtube:downloaders": "node scripts/test-youtube-downloaders.mjs",
@@ -33,6 +35,7 @@
     "eslint-config-next": "16.2.3",
     "prisma": "^6.8.0",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^3.2.4"
   }
 }

@@ -10,6 +10,20 @@ export type GroqChatCompletionResponse = {
   }>;
 };
 
+export class GroqApiRequestError extends Error {
+  status: number;
+  responseText: string;
+  model: string;
+
+  constructor(message: string, status: number, responseText: string, model: string) {
+    super(message);
+    this.name = "GroqApiRequestError";
+    this.status = status;
+    this.responseText = responseText;
+    this.model = model;
+  }
+}
+
 export type GroqModelsResponse = {
   data?: Array<{
     id?: string;
@@ -38,6 +52,94 @@ export function extractJsonObject(raw: string): string {
   }
 
   return raw.slice(start, end + 1);
+}
+
+export function supportsStrictStructuredOutputs(model: string): boolean {
+  const normalized = model.trim().toLowerCase();
+  return normalized.includes("gpt-oss");
+}
+
+export function parseGroqContentAsJson<T>(rawContent: string): T {
+  const trimmed = rawContent.trim();
+  if (!trimmed) {
+    throw new Error("Respons AI kosong");
+  }
+
+  try {
+    return JSON.parse(trimmed) as T;
+  } catch {
+    return JSON.parse(extractJsonObject(trimmed)) as T;
+  }
+}
+
+type RequestGroqJsonOptions = {
+  apiKey: string;
+  endpoint: string;
+  model: string;
+  systemPrompt: string;
+  userPrompt: string;
+  temperature?: number;
+  schemaName: string;
+  schema: Record<string, unknown>;
+  emptyContentErrorMessage?: string;
+};
+
+export async function requestGroqJson<T>(options: RequestGroqJsonOptions): Promise<{
+  data: T;
+  status: number;
+  rawContent: string;
+}> {
+  const body: Record<string, unknown> = {
+    model: options.model,
+    temperature: options.temperature ?? 0.2,
+    messages: [
+      { role: "system", content: options.systemPrompt },
+      { role: "user", content: options.userPrompt },
+    ],
+  };
+
+  if (supportsStrictStructuredOutputs(options.model)) {
+    body.response_format = {
+      type: "json_schema",
+      json_schema: {
+        name: options.schemaName,
+        schema: options.schema,
+        strict: true,
+      },
+    };
+  }
+
+  const response = await fetch(options.endpoint, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${options.apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new GroqApiRequestError(
+      `Groq request gagal (${response.status}): ${errorText}`,
+      response.status,
+      errorText,
+      options.model
+    );
+  }
+
+  const json = (await response.json()) as GroqChatCompletionResponse;
+  const rawContent = json.choices?.[0]?.message?.content?.trim();
+
+  if (!rawContent) {
+    throw new Error(options.emptyContentErrorMessage || "Respons Groq kosong");
+  }
+
+  return {
+    data: parseGroqContentAsJson<T>(rawContent),
+    status: response.status,
+    rawContent,
+  };
 }
 
 function uniqModels(models: string[]): string[] {

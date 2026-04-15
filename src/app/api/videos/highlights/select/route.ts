@@ -11,6 +11,7 @@ import {
 } from "@/lib/clip-duration";
 import { decryptSecret } from "@/lib/crypto";
 import { evaluateClipRecommendationsWithGroq, selectHighlightsWithGroq } from "@/lib/groq";
+import { runIterativeHighlightPipeline } from "@/lib/highlight-pipeline";
 import { createLogger } from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 
@@ -124,6 +125,13 @@ type NormalizedCandidate = {
   review: ClipEvaluationReview;
 };
 
+type HighlightPipelineMode = "legacy" | "iterative";
+
+function resolveHighlightPipelineMode(rawMode: string | undefined): HighlightPipelineMode {
+  const normalizedMode = rawMode?.trim().toLowerCase();
+  return normalizedMode === "legacy" ? "legacy" : "iterative";
+}
+
 export async function POST(request: NextRequest) {
   logger.info("request_received");
 
@@ -133,11 +141,21 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: false, message: "Unauthorized" }, { status: 401 });
   }
 
-  const body = (await request.json()) as {
+  let body: {
     videoId?: string;
     durationPreset?: string;
     clipCountTarget?: string | number;
   };
+  try {
+    body = (await request.json()) as {
+      videoId?: string;
+      durationPreset?: string;
+      clipCountTarget?: string | number;
+    };
+  } catch {
+    logger.warn("validation_failed_invalid_json");
+    return NextResponse.json({ ok: false, message: "Body JSON tidak valid" }, { status: 400 });
+  }
   const videoId = body.videoId?.trim() ?? "";
 
   if (!videoId) {
@@ -233,95 +251,180 @@ export async function POST(request: NextRequest) {
     logger.info("job_created", { jobId, videoId });
 
     const apiKey = decryptSecret(credential.encryptedApiKey);
-    logger.info("highlight_selection_started", {
-      jobId,
-      model: process.env.GROQ_HIGHLIGHT_MODEL?.trim() || "gpt-oss-120b",
-    });
-    const selectionWithDuration = await selectHighlightsWithGroq(transcriptSegments, apiKey, {
-      maxCandidates: clipCountTarget,
-      durationRule: durationConfig.promptRule,
-      extraRules: durationConfig.extraPromptRule ? [durationConfig.extraPromptRule] : undefined,
-    });
-    logger.info("highlight_selection_completed", {
-      jobId,
-      model: selectionWithDuration.model,
-      candidateCount: selectionWithDuration.candidates.length,
-      clipDurationPreset: durationPreset,
-      clipCountTarget,
-    });
+    const pipelineMode = resolveHighlightPipelineMode(process.env.HIGHLIGHT_PIPELINE_MODE);
+    let pipelineVersion = "legacy-v1";
+    let pipelineRunId: string | null = null;
+    let pipelineSummary: Prisma.InputJsonValue = {};
+    let originalCandidateCount = 0;
+    let selectionModel = process.env.GROQ_HIGHLIGHT_MODEL?.trim() || "gpt-oss-120b";
+    let reviewModel = process.env.GROQ_HIGHLIGHT_MODEL?.trim() || "gpt-oss-120b";
+    let normalizedCandidates: NormalizedCandidate[] = [];
 
-    const baseCandidates = selectionWithDuration.candidates.slice(0, clipCountTarget).map((candidate) => {
-      const durationAligned = enforceDuration(
-        candidate.startMs,
-        candidate.endMs,
-        durationPreset,
-        transcriptMaxEndMs
+    if (pipelineMode === "legacy") {
+      logger.info("highlight_selection_started", {
+        jobId,
+        mode: "legacy",
+        model: process.env.GROQ_HIGHLIGHT_MODEL?.trim() || "gpt-oss-120b",
+      });
+      const selectionWithDuration = await selectHighlightsWithGroq(transcriptSegments, apiKey, {
+        maxCandidates: clipCountTarget,
+        durationRule: durationConfig.promptRule,
+        extraRules: durationConfig.extraPromptRule ? [durationConfig.extraPromptRule] : undefined,
+      });
+      originalCandidateCount = selectionWithDuration.candidates.length;
+      selectionModel = selectionWithDuration.model;
+      logger.info("highlight_selection_completed", {
+        jobId,
+        mode: "legacy",
+        model: selectionWithDuration.model,
+        candidateCount: selectionWithDuration.candidates.length,
+        clipDurationPreset: durationPreset,
+        clipCountTarget,
+      });
+
+      const baseCandidates = selectionWithDuration.candidates.slice(0, clipCountTarget).map((candidate) => {
+        const durationAligned = enforceDuration(
+          candidate.startMs,
+          candidate.endMs,
+          durationPreset,
+          transcriptMaxEndMs
+        );
+        return {
+          ...candidate,
+          ...durationAligned,
+          scoreTotal: clamp(candidate.scoreTotal, 0, 1),
+          scoreText: clamp(candidate.scoreText, 0, 1),
+        };
+      });
+
+      logger.info("clip_evaluation_started", {
+        jobId,
+        mode: "legacy",
+        model: process.env.GROQ_HIGHLIGHT_MODEL?.trim() || "gpt-oss-120b",
+        candidateCount: baseCandidates.length,
+      });
+      const evaluation = await evaluateClipRecommendationsWithGroq(
+        transcriptSegments,
+        baseCandidates,
+        apiKey
       );
-      return {
-        ...candidate,
-        ...durationAligned,
-        scoreTotal: clamp(candidate.scoreTotal, 0, 1),
-        scoreText: clamp(candidate.scoreText, 0, 1),
-      };
-    });
+      reviewModel = evaluation.model;
 
-    logger.info("clip_evaluation_started", {
-      jobId,
-      model: process.env.GROQ_HIGHLIGHT_MODEL?.trim() || "gpt-oss-120b",
-      candidateCount: baseCandidates.length,
-    });
-    const evaluation = await evaluateClipRecommendationsWithGroq(
-      transcriptSegments,
-      baseCandidates,
-      apiKey
-    );
+      const reviewMap = new Map<string, ClipEvaluationReview>();
+      for (const row of evaluation.evaluations) {
+        reviewMap.set(evalKey(row.startMs, row.endMs), {
+          recommendedTitle: row.recommendedTitle,
+          overallScore: row.overallScore,
+          hookScore: row.hookScore,
+          valueScore: row.valueScore,
+          clarityScore: row.clarityScore,
+          emotionScore: row.emotionScore,
+          shareabilityScore: row.shareabilityScore,
+          whyThisWorks: row.whyThisWorks,
+          improvementTip: row.improvementTip,
+          angle: row.angle,
+        });
+      }
 
-    const reviewMap = new Map<string, ClipEvaluationReview>();
-    for (const row of evaluation.evaluations) {
-      reviewMap.set(evalKey(row.startMs, row.endMs), {
-        recommendedTitle: row.recommendedTitle,
-        overallScore: row.overallScore,
-        hookScore: row.hookScore,
-        valueScore: row.valueScore,
-        clarityScore: row.clarityScore,
-        emotionScore: row.emotionScore,
-        shareabilityScore: row.shareabilityScore,
-        whyThisWorks: row.whyThisWorks,
-        improvementTip: row.improvementTip,
-        angle: row.angle,
+      normalizedCandidates = baseCandidates.map((candidate) => {
+        const review =
+          reviewMap.get(evalKey(candidate.startMs, candidate.endMs)) || {
+            recommendedTitle: "Momen Penting yang Bikin Penasaran",
+            overallScore: Math.round(candidate.scoreTotal * 100),
+            hookScore: Math.round(candidate.scoreTotal * 100),
+            valueScore: Math.round(candidate.scoreText * 100),
+            clarityScore: Math.round(candidate.scoreText * 100),
+            emotionScore: 72,
+            shareabilityScore: 74,
+            whyThisWorks: candidate.reason,
+            improvementTip: "Perkuat kalimat pembuka agar hook makin cepat terasa.",
+            angle: candidate.topic,
+          };
+
+        return {
+          ...candidate,
+          review,
+        };
+      });
+
+      logger.info("clip_evaluation_completed", {
+        jobId,
+        mode: "legacy",
+        model: evaluation.model,
+        evaluations: evaluation.evaluations.length,
+      });
+    } else {
+      logger.info("highlight_selection_started", {
+        jobId,
+        mode: "iterative",
+        model: process.env.GROQ_HIGHLIGHT_MODEL?.trim() || "gpt-oss-120b",
+      });
+      const iterative = await runIterativeHighlightPipeline({
+        videoId,
+        jobId,
+        transcriptSegments,
+        apiKey,
+        clipCountTarget,
+        durationPreset,
+        durationRangeMs: {
+          min: durationConfig.minDurationMs,
+          max: durationConfig.maxDurationMs,
+        },
+      });
+
+      pipelineVersion = iterative.runSummary.pipelineVersion;
+      pipelineRunId = iterative.runSummary.runId;
+      pipelineSummary = {
+        ...iterative.runSummary,
+      } as Prisma.InputJsonValue;
+      selectionModel = iterative.runSummary.selectModel;
+      reviewModel = iterative.runSummary.criticModel;
+      originalCandidateCount = iterative.runSummary.seedCandidateCount;
+
+      normalizedCandidates = iterative.shortlist.map((candidate) => {
+        const durationAligned = enforceDuration(
+          candidate.startMs,
+          candidate.endMs,
+          durationPreset,
+          transcriptMaxEndMs
+        );
+
+        return {
+          startMs: durationAligned.startMs,
+          endMs: durationAligned.endMs,
+          scoreTotal: clamp(candidate.scoreTotal, 0, 1),
+          scoreText: clamp(candidate.scoreText, 0, 1),
+          reason: candidate.reason,
+          topic: candidate.topic,
+          review: {
+            recommendedTitle: candidate.review.recommendedTitle,
+            overallScore: candidate.review.overallScore,
+            hookScore: candidate.review.hookScore,
+            valueScore: candidate.review.valueScore,
+            clarityScore: candidate.review.clarityScore,
+            emotionScore: candidate.review.emotionScore,
+            shareabilityScore: candidate.review.shareabilityScore,
+            whyThisWorks: candidate.review.whyThisWorks,
+            improvementTip: candidate.review.improvementTip,
+            angle: candidate.review.angle,
+          },
+        };
+      });
+
+      logger.info("highlight_selection_completed", {
+        jobId,
+        mode: "iterative",
+        runId: pipelineRunId,
+        model: selectionModel,
+        candidateCount: normalizedCandidates.length,
+        clipDurationPreset: durationPreset,
+        clipCountTarget,
       });
     }
 
-    const normalizedCandidates: NormalizedCandidate[] = baseCandidates.map((candidate) => {
-      const review =
-        reviewMap.get(evalKey(candidate.startMs, candidate.endMs)) || {
-          recommendedTitle: "Momen Penting yang Bikin Penasaran",
-          overallScore: Math.round(candidate.scoreTotal * 100),
-          hookScore: Math.round(candidate.scoreTotal * 100),
-          valueScore: Math.round(candidate.scoreText * 100),
-          clarityScore: Math.round(candidate.scoreText * 100),
-          emotionScore: 72,
-          shareabilityScore: 74,
-          whyThisWorks: candidate.reason,
-          improvementTip: "Perkuat kalimat pembuka agar hook makin cepat terasa.",
-          angle: candidate.topic,
-        };
-
-      return {
-        ...candidate,
-        review,
-      };
-    });
-
-    logger.info("clip_evaluation_completed", {
-      jobId,
-      model: evaluation.model,
-      evaluations: evaluation.evaluations.length,
-    });
-
     logger.info("highlight_candidates_normalized", {
       jobId,
-      originalCount: selectionWithDuration.candidates.length,
+      originalCount: originalCandidateCount,
       clipDurationPreset: durationPreset,
       clipCountTarget,
       normalizedCount: normalizedCandidates.length,
@@ -342,7 +445,7 @@ export async function POST(request: NextRequest) {
             scoreText: new Prisma.Decimal(candidate.scoreText.toFixed(4)),
             reasonJson: {
               method: "groq-llm",
-              model: selectionWithDuration.model,
+              model: selectionModel,
               reason: candidate.reason,
               topic: candidate.topic || null,
               clipDurationPreset: durationPreset,
@@ -351,8 +454,11 @@ export async function POST(request: NextRequest) {
                 max: durationConfig.maxDurationMs,
               },
               clipCountTarget,
+              pipelineMode,
+              pipelineVersion,
+              pipelineRunId,
               clipReview: {
-                model: evaluation.model,
+                model: reviewModel,
                 recommendedTitle: candidate.review.recommendedTitle,
                 overallScore: candidate.review.overallScore,
                 hookScore: candidate.review.hookScore,
@@ -367,7 +473,7 @@ export async function POST(request: NextRequest) {
             },
             rankOrder: index + 1,
             isSelected: true,
-            selectedBy: `auto:${selectionWithDuration.model}`,
+            selectedBy: `auto:${selectionModel}`,
           },
         });
       }
@@ -379,14 +485,18 @@ export async function POST(request: NextRequest) {
             ...existingMetadata,
             highlightSelection: {
               provider: "groq",
-              model: selectionWithDuration.model,
-              reviewModel: evaluation.model,
+              model: selectionModel,
+              reviewModel,
               clipDurationPreset: durationPreset,
               clipDurationRangeMs: {
                 min: durationConfig.minDurationMs,
                 max: durationConfig.maxDurationMs,
               },
               clipCountTarget,
+              pipelineMode,
+              pipelineVersion,
+              runId: pipelineRunId,
+              summary: pipelineSummary,
               selectedCount: normalizedCandidates.length,
               selectedAt: new Date().toISOString(),
             },
@@ -406,10 +516,14 @@ export async function POST(request: NextRequest) {
           finishedAt: new Date(),
           result: {
             selectedCount: normalizedCandidates.length,
-            model: selectionWithDuration.model,
-            reviewModel: evaluation.model,
+            model: selectionModel,
+            reviewModel,
             clipDurationPreset: durationPreset,
             clipCountTarget,
+            pipelineMode,
+            pipelineVersion,
+            runId: pipelineRunId,
+            summary: pipelineSummary,
           },
         },
       });
@@ -419,7 +533,11 @@ export async function POST(request: NextRequest) {
       jobId,
       videoId,
       selectedCount: normalizedCandidates.length,
-      model: selectionWithDuration.model,
+      model: selectionModel,
+      reviewModel,
+      pipelineMode,
+      pipelineVersion,
+      pipelineRunId,
       clipDurationPreset: durationPreset,
       clipCountTarget,
     });
@@ -428,24 +546,38 @@ export async function POST(request: NextRequest) {
       ok: true,
       message: "Highlight selection selesai",
       highlights: {
-        model: selectionWithDuration.model,
+        model: selectionModel,
         clipDurationPreset: durationPreset,
         clipCountTarget,
-        reviewModel: evaluation.model,
+        reviewModel,
+        pipelineMode,
+        pipelineVersion,
+        runId: pipelineRunId,
         candidates: normalizedCandidates,
       },
     });
   } catch (error) {
     if (jobId) {
-      await prisma.job.update({
-        where: { id: jobId },
-        data: {
-          status: "failed",
-          finishedAt: new Date(),
-          errorMessage: error instanceof Error ? error.message : "Highlight selection gagal",
-          lastError: error instanceof Error ? error.message : "Highlight selection gagal",
-        },
-      });
+      try {
+        await prisma.job.update({
+          where: { id: jobId },
+          data: {
+            status: "failed",
+            finishedAt: new Date(),
+            errorMessage: error instanceof Error ? error.message : "Highlight selection gagal",
+            lastError: error instanceof Error ? error.message : "Highlight selection gagal",
+          },
+        });
+      } catch (jobUpdateError) {
+        logger.error("highlight_pipeline_failed_job_update_failed", {
+          videoId,
+          jobId,
+          originalMessage: error instanceof Error ? error.message : "Highlight selection gagal",
+          updateErrorMessage:
+            jobUpdateError instanceof Error ? jobUpdateError.message : "Failed to mark job as failed",
+          error: jobUpdateError,
+        });
+      }
     }
 
     logger.error("highlight_pipeline_failed", {

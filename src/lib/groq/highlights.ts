@@ -3,11 +3,11 @@ import {
   buildCandidateWindowText,
   buildGroqModelsEndpoint,
   clamp,
-  extractJsonObject,
+  GroqApiRequestError,
   listGroqModels,
   looksLikeModelNotFound,
+  requestGroqJson,
   resolveHighlightModelCandidates,
-  type GroqChatCompletionResponse,
 } from "@/lib/groq/shared";
 
 const logger = createLogger("lib/groq/highlights");
@@ -48,6 +48,33 @@ type HighlightSelectionOptions = {
   extraRules?: string[];
 };
 
+export type HighlightCriticEvaluation = {
+  startMs: number;
+  endMs: number;
+  overallScore: number;
+  hookScore: number;
+  valueScore: number;
+  clarityScore: number;
+  emotionScore: number;
+  noveltyScore: number;
+  shareabilityScore: number;
+  isPass: boolean;
+  failureReasons: string[];
+  fixGuidance: string;
+  topic?: string;
+};
+
+type SelectHighlightsForWindowInput = {
+  index: number;
+  startMs: number;
+  endMs: number;
+  segments: TranscriptForSelection[];
+};
+
+type CriticEvaluateOptions = {
+  passThreshold?: number;
+};
+
 function normalizeCandidates(input: unknown): GroqHighlightCandidate[] {
   if (!input || typeof input !== "object") {
     return [];
@@ -63,10 +90,16 @@ function normalizeCandidates(input: unknown): GroqHighlightCandidate[] {
       }
 
       const item = candidate as Record<string, unknown>;
-      const startMs = Number(item.startMs);
-      const endMs = Number(item.endMs);
+      const rawStartMs = Number(item.startMs);
+      const rawEndMs = Number(item.endMs);
 
-      if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+      if (!Number.isFinite(rawStartMs) || !Number.isFinite(rawEndMs)) {
+        return null;
+      }
+
+      const startMs = Math.max(0, Math.round(rawStartMs));
+      const endMs = Math.max(1, Math.round(rawEndMs));
+      if (endMs <= startMs) {
         return null;
       }
 
@@ -77,8 +110,8 @@ function normalizeCandidates(input: unknown): GroqHighlightCandidate[] {
       const topic = typeof item.topic === "string" ? item.topic.trim() : undefined;
 
       return {
-        startMs: Math.max(0, Math.round(startMs)),
-        endMs: Math.max(1, Math.round(endMs)),
+        startMs,
+        endMs,
         scoreTotal,
         scoreText,
         reason,
@@ -92,6 +125,113 @@ function normalizeCandidates(input: unknown): GroqHighlightCandidate[] {
       }
       return a.startMs - b.startMs;
     });
+}
+
+function normalizeFailureReasons(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item) => (typeof item === "string" ? item.trim() : ""))
+    .filter((item) => item.length > 0)
+    .slice(0, 5);
+}
+
+function normalizeCriticEvaluations(
+  input: unknown,
+  passThreshold: number
+): HighlightCriticEvaluation[] {
+  if (!input || typeof input !== "object") {
+    return [];
+  }
+
+  const record = input as Record<string, unknown>;
+  const evaluations = Array.isArray(record.evaluations) ? record.evaluations : [];
+
+  return evaluations
+    .map((row): HighlightCriticEvaluation | null => {
+      if (!row || typeof row !== "object") {
+        return null;
+      }
+
+      const item = row as Record<string, unknown>;
+      const rawStartMs = Number(item.startMs);
+      const rawEndMs = Number(item.endMs);
+      if (!Number.isFinite(rawStartMs) || !Number.isFinite(rawEndMs)) {
+        return null;
+      }
+
+      const startMs = Math.max(0, Math.round(rawStartMs));
+      const endMs = Math.max(1, Math.round(rawEndMs));
+      if (endMs <= startMs) {
+        return null;
+      }
+
+      const overallScore = normalizeScore100(item.overallScore ?? item.score, 68);
+      const hookScore = normalizeScore100(item.hookScore, overallScore);
+      const valueScore = normalizeScore100(item.valueScore, overallScore);
+      const clarityScore = normalizeScore100(item.clarityScore, overallScore);
+      const emotionScore = normalizeScore100(item.emotionScore, overallScore);
+      const noveltyScore = normalizeScore100(item.noveltyScore, overallScore);
+      const shareabilityScore = normalizeScore100(item.shareabilityScore, overallScore);
+
+      const rawVerdict = typeof item.verdict === "string" ? item.verdict.trim().toUpperCase() : "";
+      const isPass =
+        typeof item.isPass === "boolean"
+          ? item.isPass
+          : rawVerdict
+            ? rawVerdict === "PASS"
+            : overallScore >= passThreshold;
+      const failureReasons = normalizeFailureReasons(item.failureReasons ?? item.failureTags);
+
+      const fixGuidanceRaw =
+        typeof item.fixGuidance === "string"
+          ? item.fixGuidance
+          : typeof item.suggestedFix === "string"
+            ? item.suggestedFix
+            : typeof item.reason === "string"
+              ? item.reason
+              : "Perkuat hook awal dan pertegas value utama clip.";
+      const fixGuidance =
+        fixGuidanceRaw.trim().length > 0
+          ? fixGuidanceRaw.trim()
+          : "Perkuat hook awal dan pertegas value utama clip.";
+      const topic = typeof item.topic === "string" ? item.topic.trim() : undefined;
+
+      return {
+        startMs,
+        endMs,
+        overallScore,
+        hookScore,
+        valueScore,
+        clarityScore,
+        emotionScore,
+        noveltyScore,
+        shareabilityScore,
+        isPass,
+        failureReasons,
+        fixGuidance,
+        topic,
+      };
+    })
+    .filter((item): item is HighlightCriticEvaluation => item !== null);
+}
+
+function isModelUnavailableError(error: unknown): boolean {
+  if (!(error instanceof GroqApiRequestError)) {
+    return false;
+  }
+
+  return looksLikeModelNotFound(error.status, error.responseText);
+}
+
+function isAuthOrPermissionError(error: unknown): boolean {
+  if (!(error instanceof GroqApiRequestError)) {
+    return false;
+  }
+
+  return error.status === 401 || error.status === 403;
 }
 
 function normalizeScore100(value: unknown, fallback = 70): number {
@@ -122,10 +262,16 @@ function normalizeClipEvaluations(input: unknown): GroqClipEvaluation[] {
       }
 
       const item = row as Record<string, unknown>;
-      const startMs = Number(item.startMs);
-      const endMs = Number(item.endMs);
+      const rawStartMs = Number(item.startMs);
+      const rawEndMs = Number(item.endMs);
 
-      if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+      if (!Number.isFinite(rawStartMs) || !Number.isFinite(rawEndMs)) {
+        return null;
+      }
+
+      const startMs = Math.max(0, Math.round(rawStartMs));
+      const endMs = Math.max(1, Math.round(rawEndMs));
+      if (endMs <= startMs) {
         return null;
       }
 
@@ -157,8 +303,8 @@ function normalizeClipEvaluations(input: unknown): GroqClipEvaluation[] {
       const angle = typeof item.angle === "string" ? item.angle.trim() : undefined;
 
       return {
-        startMs: Math.max(0, Math.round(startMs)),
-        endMs: Math.max(1, Math.round(endMs)),
+        startMs,
+        endMs,
         recommendedTitle,
         overallScore: normalizeScore100(item.overallScore, 75),
         hookScore: normalizeScore100(item.hookScore, 75),
@@ -222,55 +368,73 @@ export async function selectHighlightsWithGroq(
 
   let lastError: string | null = null;
 
-  for (const model of candidateModels) {
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
+  const selectSchema: Record<string, unknown> = {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      candidates: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            startMs: { type: "number" },
+            endMs: { type: "number" },
+            scoreTotal: { type: "number" },
+            scoreText: { type: "number" },
+            reason: { type: "string" },
+            topic: { type: "string" },
+          },
+          required: ["startMs", "endMs", "scoreTotal", "scoreText", "reason"],
+        },
       },
-      body: JSON.stringify({
+    },
+    required: ["candidates"],
+  };
+
+  for (const model of candidateModels) {
+    try {
+      const { data, status } = await requestGroqJson<unknown>({
+        apiKey,
+        endpoint,
         model,
+        systemPrompt,
+        userPrompt,
         temperature: 0.2,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
-        ],
-      }),
-    });
+        schemaName: "highlight_candidates",
+        schema: selectSchema,
+        emptyContentErrorMessage: "Respons highlight selection kosong",
+      });
+      logger.info("highlight_response_received", { model, status });
 
-    logger.info("highlight_response_received", { model, status: response.status });
+      const candidates = normalizeCandidates(data);
+      if (candidates.length === 0) {
+        logger.warn("highlight_candidates_empty", { model });
+        throw new Error("AI tidak menghasilkan kandidat highlight valid");
+      }
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      lastError = `Groq highlight selection gagal (${response.status}): ${errorText}`;
-
-      if (looksLikeModelNotFound(response.status, errorText)) {
-        logger.warn("highlight_model_unavailable", { model, status: response.status });
+      logger.info("highlight_request_completed", { model, candidates: candidates.length });
+      return { model, candidates };
+    } catch (error) {
+      if (isModelUnavailableError(error)) {
+        const groqError = error as GroqApiRequestError;
+        lastError = `Groq highlight selection gagal (${groqError.status}): ${groqError.responseText}`;
+        logger.warn("highlight_model_unavailable", { model, status: groqError.status });
         continue;
       }
 
-      logger.error("highlight_request_failed", { model, status: response.status, errorText });
-      throw new Error(lastError);
+      if (isAuthOrPermissionError(error)) {
+        const groqError = error as GroqApiRequestError;
+        const message = `Groq highlight selection gagal (${groqError.status}): ${groqError.responseText}`;
+        logger.error("highlight_request_auth_failed", { model, status: groqError.status });
+        throw new Error(message);
+      }
+
+      const message = error instanceof Error ? error.message : "Groq highlight selection gagal";
+      lastError = message;
+      logger.warn("highlight_request_model_failed", { model, message });
+      continue;
     }
-
-    const json = (await response.json()) as GroqChatCompletionResponse;
-    const rawContent = json.choices?.[0]?.message?.content?.trim();
-
-    if (!rawContent) {
-      throw new Error("Respons highlight selection kosong");
-    }
-
-    const parsed = JSON.parse(extractJsonObject(rawContent)) as unknown;
-    const candidates = normalizeCandidates(parsed);
-
-    if (candidates.length === 0) {
-      logger.warn("highlight_candidates_empty", { model });
-      throw new Error("AI tidak menghasilkan kandidat highlight valid");
-    }
-
-    logger.info("highlight_request_completed", { model, candidates: candidates.length });
-    return { model, candidates };
   }
 
   throw new Error(
@@ -331,58 +495,378 @@ export async function evaluateClipRecommendationsWithGroq(
 
   let lastError: string | null = null;
 
-  for (const model of candidateModels) {
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
+  const clipEvalSchema: Record<string, unknown> = {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      evaluations: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            startMs: { type: "number" },
+            endMs: { type: "number" },
+            recommendedTitle: { type: "string" },
+            overallScore: { type: "number" },
+            hookScore: { type: "number" },
+            valueScore: { type: "number" },
+            clarityScore: { type: "number" },
+            emotionScore: { type: "number" },
+            shareabilityScore: { type: "number" },
+            whyThisWorks: { type: "string" },
+            improvementTip: { type: "string" },
+            angle: { type: "string" },
+          },
+          required: ["startMs", "endMs", "recommendedTitle"],
+        },
       },
-      body: JSON.stringify({
+    },
+    required: ["evaluations"],
+  };
+
+  for (const model of candidateModels) {
+    try {
+      const { data, status } = await requestGroqJson<unknown>({
+        apiKey,
+        endpoint,
         model,
+        systemPrompt,
+        userPrompt,
         temperature: 0.3,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
-        ],
-      }),
-    });
+        schemaName: "clip_recommendation_evaluations",
+        schema: clipEvalSchema,
+        emptyContentErrorMessage: "Respons evaluasi clip kosong",
+      });
+      logger.info("clip_eval_response_received", { model, status });
 
-    logger.info("clip_eval_response_received", { model, status: response.status });
+      const evaluations = normalizeClipEvaluations(data);
+      if (evaluations.length === 0) {
+        throw new Error("AI tidak menghasilkan evaluasi clip yang valid");
+      }
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      lastError = `Groq clip evaluation gagal (${response.status}): ${errorText}`;
-
-      if (looksLikeModelNotFound(response.status, errorText)) {
-        logger.warn("clip_eval_model_unavailable", { model, status: response.status });
+      logger.info("clip_eval_request_completed", { model, evaluations: evaluations.length });
+      return { model, evaluations };
+    } catch (error) {
+      if (isModelUnavailableError(error)) {
+        const groqError = error as GroqApiRequestError;
+        lastError = `Groq clip evaluation gagal (${groqError.status}): ${groqError.responseText}`;
+        logger.warn("clip_eval_model_unavailable", { model, status: groqError.status });
         continue;
       }
 
-      logger.error("clip_eval_request_failed", { model, status: response.status, errorText });
-      throw new Error(lastError);
+      if (isAuthOrPermissionError(error)) {
+        const groqError = error as GroqApiRequestError;
+        const message = `Groq clip evaluation gagal (${groqError.status}): ${groqError.responseText}`;
+        logger.error("clip_eval_request_auth_failed", { model, status: groqError.status });
+        throw new Error(message);
+      }
+
+      const message = error instanceof Error ? error.message : "Groq clip evaluation gagal";
+      lastError = message;
+      logger.warn("clip_eval_request_model_failed", { model, message });
+      continue;
     }
-
-    const json = (await response.json()) as GroqChatCompletionResponse;
-    const rawContent = json.choices?.[0]?.message?.content?.trim();
-
-    if (!rawContent) {
-      throw new Error("Respons evaluasi clip kosong");
-    }
-
-    const parsed = JSON.parse(extractJsonObject(rawContent)) as unknown;
-    const evaluations = normalizeClipEvaluations(parsed);
-
-    if (evaluations.length === 0) {
-      throw new Error("AI tidak menghasilkan evaluasi clip yang valid");
-    }
-
-    logger.info("clip_eval_request_completed", { model, evaluations: evaluations.length });
-    return { model, evaluations };
   }
 
   throw new Error(
     lastError ||
       "Groq clip evaluation gagal: tidak menemukan model yang tersedia. Cek akses model pada API key Groq."
+  );
+}
+
+export async function selectHighlightsForWindowWithGroq(
+  input: SelectHighlightsForWindowInput,
+  apiKey: string,
+  options?: HighlightSelectionOptions
+) {
+  const selection = await selectHighlightsWithGroq(input.segments, apiKey, options);
+
+  const bounded = selection.candidates
+    .map((candidate) => {
+      const startMs = Math.max(input.startMs, candidate.startMs);
+      const endMs = Math.min(input.endMs, candidate.endMs);
+      if (endMs <= startMs) {
+        return null;
+      }
+      return {
+        ...candidate,
+        startMs,
+        endMs,
+      };
+    })
+    .filter((candidate): candidate is GroqHighlightCandidate => candidate !== null)
+    .sort((a, b) => {
+      if (b.scoreTotal !== a.scoreTotal) {
+        return b.scoreTotal - a.scoreTotal;
+      }
+      return a.startMs - b.startMs;
+    });
+
+  return {
+    model: selection.model,
+    windowIndex: input.index,
+    candidates: bounded,
+  };
+}
+
+export async function criticEvaluateHighlightsWithGroq(
+  transcriptSegments: TranscriptForSelection[],
+  candidates: GroqHighlightCandidate[],
+  apiKey: string,
+  options?: CriticEvaluateOptions
+) {
+  const requestedModel = process.env.GROQ_HIGHLIGHT_MODEL?.trim() || "openai/gpt-oss-120b";
+  const endpoint =
+    process.env.GROQ_CHAT_ENDPOINT?.trim() || "https://api.groq.com/openai/v1/chat/completions";
+  const modelsEndpoint = buildGroqModelsEndpoint(endpoint);
+  const passThreshold = Math.max(1, Math.min(100, Math.round(options?.passThreshold ?? 75)));
+
+  const availableModels = await listGroqModels(apiKey, modelsEndpoint);
+  const candidateModels = resolveHighlightModelCandidates(requestedModel, availableModels);
+
+  const compactCandidates = candidates.slice(0, 8).map((candidate) => ({
+    startMs: candidate.startMs,
+    endMs: candidate.endMs,
+    topic: candidate.topic || null,
+    reason: candidate.reason,
+    transcriptWindow: buildCandidateWindowText(
+      transcriptSegments,
+      candidate.startMs,
+      candidate.endMs,
+      520
+    ),
+  }));
+
+  const systemPrompt = [
+    "Kamu adalah quality critic untuk short clips.",
+    "Evaluasi kandidat secara ketat berdasarkan hook, kejelasan, nilai, dan kesiapan publish.",
+    "Output HARUS JSON valid tanpa markdown.",
+  ].join(" ");
+
+  const userPrompt = [
+    `Tandai kandidat sebagai isPass=true jika overallScore >= ${passThreshold}, selain itu false.`,
+    "Format JSON wajib:",
+    '{"evaluations":[{"startMs":1234,"endMs":4567,"overallScore":82,"hookScore":80,"valueScore":84,"clarityScore":78,"emotionScore":75,"noveltyScore":77,"shareabilityScore":83,"isPass":false,"failureReasons":["hook"],"fixGuidance":"...","topic":"..."}]}',
+    "failureReasons contoh: hook,clarity,value,emotion,novelty,timing,cta.",
+    "Candidates:",
+    JSON.stringify(compactCandidates),
+  ].join("\n");
+
+  const criticSchema: Record<string, unknown> = {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      evaluations: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            startMs: { type: "number" },
+            endMs: { type: "number" },
+            overallScore: { type: "number" },
+            hookScore: { type: "number" },
+            valueScore: { type: "number" },
+            clarityScore: { type: "number" },
+            emotionScore: { type: "number" },
+            noveltyScore: { type: "number" },
+            shareabilityScore: { type: "number" },
+            isPass: { type: "boolean" },
+            failureReasons: { type: "array", items: { type: "string" } },
+            fixGuidance: { type: "string" },
+            topic: { type: "string" },
+          },
+          required: [
+            "startMs",
+            "endMs",
+            "overallScore",
+            "hookScore",
+            "valueScore",
+            "clarityScore",
+            "emotionScore",
+            "noveltyScore",
+            "shareabilityScore",
+            "isPass",
+            "failureReasons",
+            "fixGuidance",
+          ],
+        },
+      },
+    },
+    required: ["evaluations"],
+  };
+
+  let lastError: string | null = null;
+
+  for (const model of candidateModels) {
+    try {
+      const { data, status } = await requestGroqJson<unknown>({
+        apiKey,
+        endpoint,
+        model,
+        systemPrompt,
+        userPrompt,
+        temperature: 0.1,
+        schemaName: "highlight_critic_evaluations",
+        schema: criticSchema,
+        emptyContentErrorMessage: "Respons critic evaluation kosong",
+      });
+      logger.info("highlight_critic_response_received", { model, status });
+
+      const evaluations = normalizeCriticEvaluations(data, passThreshold);
+      if (evaluations.length === 0) {
+        throw new Error("AI tidak menghasilkan critic evaluation yang valid");
+      }
+
+      return { model, evaluations };
+    } catch (error) {
+      if (isModelUnavailableError(error)) {
+        const groqError = error as GroqApiRequestError;
+        lastError = `Groq critic evaluation gagal (${groqError.status}): ${groqError.responseText}`;
+        logger.warn("highlight_critic_model_unavailable", { model, status: groqError.status });
+        continue;
+      }
+
+      if (isAuthOrPermissionError(error)) {
+        const groqError = error as GroqApiRequestError;
+        const message = `Groq critic evaluation gagal (${groqError.status}): ${groqError.responseText}`;
+        logger.error("highlight_critic_request_auth_failed", { model, status: groqError.status });
+        throw new Error(message);
+      }
+
+      const message = error instanceof Error ? error.message : "Groq critic evaluation gagal";
+      lastError = message;
+      logger.warn("highlight_critic_model_failed", { model, message });
+      continue;
+    }
+  }
+
+  throw new Error(
+    lastError ||
+      "Groq critic evaluation gagal: tidak menemukan model yang tersedia. Cek akses model pada API key Groq."
+  );
+}
+
+export async function regenerateHighlightsFromFailuresWithGroq(
+  transcriptSegments: TranscriptForSelection[],
+  failedEvaluations: HighlightCriticEvaluation[],
+  apiKey: string
+) {
+  const failures = failedEvaluations.filter((row) => !row.isPass);
+  if (failures.length === 0) {
+    return {
+      model: "none",
+      candidates: [] as GroqHighlightCandidate[],
+    };
+  }
+
+  const requestedModel = process.env.GROQ_HIGHLIGHT_MODEL?.trim() || "openai/gpt-oss-120b";
+  const endpoint =
+    process.env.GROQ_CHAT_ENDPOINT?.trim() || "https://api.groq.com/openai/v1/chat/completions";
+  const modelsEndpoint = buildGroqModelsEndpoint(endpoint);
+
+  const availableModels = await listGroqModels(apiKey, modelsEndpoint);
+  const candidateModels = resolveHighlightModelCandidates(requestedModel, availableModels);
+
+  const compactFailures = failures.slice(0, 6).map((failure) => ({
+    startMs: failure.startMs,
+    endMs: failure.endMs,
+    failureReasons: failure.failureReasons,
+    fixGuidance: failure.fixGuidance,
+    topic: failure.topic || null,
+    context: buildCandidateWindowText(transcriptSegments, failure.startMs, failure.endMs, 520),
+  }));
+
+  const systemPrompt = [
+    "Kamu adalah AI editor short-form yang memperbaiki kandidat clip gagal review.",
+    "Tugasmu menghasilkan kandidat baru non-overlap berat dan lebih kuat dari kandidat gagal.",
+    "Output HARUS JSON valid tanpa markdown.",
+  ].join(" ");
+
+  const userPrompt = [
+    "Buat kandidat baru pengganti dari daftar kegagalan berikut.",
+    "Format JSON wajib:",
+    '{"candidates":[{"startMs":1234,"endMs":5678,"scoreTotal":0.88,"scoreText":0.86,"reason":"...","topic":"..."}]}',
+    "Aturan:",
+    "- Usahakan durasi 20-45 detik",
+    "- Hindari overlap berat dengan rentang gagal",
+    "- Gunakan timestamp yang masuk akal berdasarkan konteks",
+    "Failures:",
+    JSON.stringify(compactFailures),
+  ].join("\n");
+
+  const regenSchema: Record<string, unknown> = {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      candidates: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            startMs: { type: "number" },
+            endMs: { type: "number" },
+            scoreTotal: { type: "number" },
+            scoreText: { type: "number" },
+            reason: { type: "string" },
+            topic: { type: "string" },
+          },
+          required: ["startMs", "endMs", "scoreTotal", "scoreText", "reason"],
+        },
+      },
+    },
+    required: ["candidates"],
+  };
+
+  let lastError: string | null = null;
+
+  for (const model of candidateModels) {
+    try {
+      const { data, status } = await requestGroqJson<unknown>({
+        apiKey,
+        endpoint,
+        model,
+        systemPrompt,
+        userPrompt,
+        temperature: 0.25,
+        schemaName: "highlight_regeneration_candidates",
+        schema: regenSchema,
+        emptyContentErrorMessage: "Respons regenerate highlight kosong",
+      });
+      logger.info("highlight_regenerate_response_received", { model, status });
+
+      const candidates = normalizeCandidates(data);
+      if (candidates.length === 0) {
+        throw new Error("AI tidak menghasilkan kandidat regenerate yang valid");
+      }
+
+      return { model, candidates };
+    } catch (error) {
+      if (isModelUnavailableError(error)) {
+        const groqError = error as GroqApiRequestError;
+        lastError = `Groq regenerate highlight gagal (${groqError.status}): ${groqError.responseText}`;
+        logger.warn("highlight_regenerate_model_unavailable", { model, status: groqError.status });
+        continue;
+      }
+
+      if (isAuthOrPermissionError(error)) {
+        const groqError = error as GroqApiRequestError;
+        const message = `Groq regenerate highlight gagal (${groqError.status}): ${groqError.responseText}`;
+        logger.error("highlight_regenerate_request_auth_failed", { model, status: groqError.status });
+        throw new Error(message);
+      }
+
+      const message = error instanceof Error ? error.message : "Groq regenerate highlight gagal";
+      lastError = message;
+      logger.warn("highlight_regenerate_model_failed", { model, message });
+      continue;
+    }
+  }
+
+  throw new Error(
+    lastError ||
+      "Groq regenerate highlight gagal: tidak menemukan model yang tersedia. Cek akses model pada API key Groq."
   );
 }
