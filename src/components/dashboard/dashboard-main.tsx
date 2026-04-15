@@ -8,6 +8,7 @@ import { HeroSection } from "@/components/dashboard/hero-section";
 import { ProduceClipsCta } from "@/components/dashboard/produce-clips-cta";
 import { VideoSourceInput } from "@/components/dashboard/video-source-input";
 import { WorkflowChips } from "@/components/dashboard/workflow-chips";
+import { type ClipDurationPreset } from "@/lib/clip-duration";
 
 type TranscriptLine = {
   startMs: number;
@@ -93,6 +94,7 @@ export function DashboardMain() {
   const [podcastTwoSpeakerMode, setPodcastTwoSpeakerMode] = useState(false);
   const [watermarkText, setWatermarkText] = useState("");
   const [watermarkLogoFile, setWatermarkLogoFile] = useState<File | null>(null);
+  const [clipDurationPreset, setClipDurationPreset] = useState<ClipDurationPreset>("under_1_minute");
   const [processing, setProcessing] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [isError, setIsError] = useState(false);
@@ -145,6 +147,7 @@ export function DashboardMain() {
         formData.append("file", selectedFile as File);
         formData.append("renderLayout", renderLayoutMode);
         formData.append("podcastTwoSpeakerMode", podcastModeEnabled ? "true" : "false");
+        formData.append("clipDurationPreset", clipDurationPreset);
         if (normalizedWatermarkText) {
           formData.append("watermarkText", normalizedWatermarkText);
         }
@@ -164,6 +167,7 @@ export function DashboardMain() {
         formData.append("url", url.trim());
         formData.append("renderLayout", renderLayoutMode);
         formData.append("podcastTwoSpeakerMode", podcastModeEnabled ? "true" : "false");
+        formData.append("clipDurationPreset", clipDurationPreset);
         if (normalizedWatermarkText) {
           formData.append("watermarkText", normalizedWatermarkText);
         }
@@ -216,7 +220,7 @@ export function DashboardMain() {
       const transcribeResponse = await fetch("/api/videos/transcribe", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ videoId: importedVideoId }),
+        body: JSON.stringify({ videoId: importedVideoId, durationPreset: clipDurationPreset }),
       });
 
       const transcribeResult = (await transcribeResponse.json()) as {
@@ -360,6 +364,7 @@ export function DashboardMain() {
       setPodcastTwoSpeakerMode(false);
       setWatermarkText("");
       setWatermarkLogoFile(null);
+      setClipDurationPreset("under_1_minute");
       redirectVideoId = importedVideoId;
     } catch {
       markStep(activeStep, "error", "Terjadi kesalahan jaringan saat memproses step ini.");
@@ -400,6 +405,8 @@ export function DashboardMain() {
             onWatermarkTextChange={setWatermarkText}
             onWatermarkLogoSelect={setWatermarkLogoFile}
             selectedWatermarkLogoName={watermarkLogoFile?.name || null}
+            clipDurationPreset={clipDurationPreset}
+            onClipDurationPresetChange={setClipDurationPreset}
             disabled={processing}
           />
           <ProduceClipsCta onClick={handleProduce} disabled={processing} isProcessing={processing} />

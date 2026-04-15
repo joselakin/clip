@@ -2,6 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { NextRequest, NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { stat } from "node:fs/promises";
 
 import { isValidSessionToken, SESSION_COOKIE_NAME } from "@/lib/auth";
@@ -613,7 +614,7 @@ export async function POST(request: NextRequest) {
         startMs: clip.startMs,
         endMs: clip.endMs,
         outputFileKey: clip.outputFileKey,
-        subtitleMode: clip.subtitleMode,
+        subtitleMode: clip.subtitleMode === "hard" ? "hard" : "none",
         subtitleFileKey: clip.subtitleFileKey,
         thumbnailKey: clip.thumbnailKey,
       });
@@ -653,7 +654,7 @@ export async function POST(request: NextRequest) {
       await tx.video.update({
         where: { id: videoId },
         data: {
-          metadata: nextMetadata,
+          metadata: nextMetadata as Prisma.InputJsonValue,
         },
       });
 

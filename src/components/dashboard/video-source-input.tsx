@@ -1,4 +1,9 @@
 import { MaterialIcon } from "@/components/common/material-icon";
+import {
+  CLIP_DURATION_PRESETS,
+  getClipDurationPresetConfig,
+  type ClipDurationPreset,
+} from "@/lib/clip-duration";
 
 type VideoSourceInputProps = {
   value: string;
@@ -13,6 +18,8 @@ type VideoSourceInputProps = {
   onWatermarkTextChange?: (value: string) => void;
   onWatermarkLogoSelect?: (file: File | null) => void;
   selectedWatermarkLogoName?: string | null;
+  clipDurationPreset?: ClipDurationPreset;
+  onClipDurationPresetChange?: (value: ClipDurationPreset) => void;
   disabled?: boolean;
 };
 
@@ -29,6 +36,8 @@ export function VideoSourceInput({
   onWatermarkTextChange,
   onWatermarkLogoSelect,
   selectedWatermarkLogoName,
+  clipDurationPreset = "under_1_minute",
+  onClipDurationPresetChange,
   disabled = false,
 }: VideoSourceInputProps) {
   return (
@@ -73,6 +82,36 @@ export function VideoSourceInput({
           Selected file: {selectedFileName}
         </p>
       )}
+
+      <div className="mt-4 rounded-xl border border-white/10 bg-[#121212]/80 p-4 space-y-3">
+        <p className="text-xs font-semibold uppercase tracking-wide text-[#c3c0bf]">Durasi Konten</p>
+
+        <div className="grid grid-cols-2 gap-2">
+          {CLIP_DURATION_PRESETS.map((preset) => {
+            const config = getClipDurationPresetConfig(preset);
+            const isActive = clipDurationPreset === preset;
+            return (
+              <button
+                key={preset}
+                type="button"
+                disabled={disabled}
+                onClick={() => onClipDurationPresetChange?.(preset)}
+                className={`rounded-lg px-3 py-2 text-xs font-bold uppercase tracking-wide border transition-colors ${
+                  isActive
+                    ? "border-[#85adff]/70 bg-[#1a2640] text-[#9dc0ff]"
+                    : "border-white/15 bg-[#171717] text-[#bcb8b6] hover:border-white/30"
+                }`}
+              >
+                {config.label}
+              </button>
+            );
+          })}
+        </div>
+
+        <p className="text-[11px] text-[#8f8b89]">
+          Atur gaya durasi clip: singkat, medium, panjang (maks ~5 menit), atau campuran otomatis.
+        </p>
+      </div>
 
       <div className="mt-4 rounded-xl border border-white/10 bg-[#121212]/80 p-4 space-y-3">
         <p className="text-xs font-semibold uppercase tracking-wide text-[#c3c0bf]">Layout Render</p>

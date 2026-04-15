@@ -26,13 +26,7 @@ type YtdlCookie = {
   expirationDate?: number;
 };
 
-export type YtdlRequestOptions = {
-  requestOptions?: {
-    headers?: Record<string, string>;
-  };
-  playerClients?: Array<"WEB" | "WEB_EMBEDDED" | "TV" | "IOS" | "ANDROID">;
-  agent?: unknown;
-};
+export type YtdlRequestOptions = Pick<ytdl.getInfoOptions, "requestOptions" | "playerClients" | "agent">;
 
 type WrappedCookieExport = {
   data?: string;
@@ -77,7 +71,7 @@ export function extractCodecs(mimeType?: string | null): {
   return { videoCodec, audioCodec };
 }
 
-export function pickBestCombinedFormat(formats: Array<Record<string, unknown>>) {
+export function pickBestCombinedFormat(formats: ytdl.videoFormat[]) {
   const combined = formats.filter((format) => {
     return Boolean(format.hasAudio) && Boolean(format.hasVideo);
   });
@@ -98,17 +92,7 @@ export function pickBestCombinedFormat(formats: Array<Record<string, unknown>>) 
     return bBitrate - aBitrate;
   });
 
-  return combined[0] as {
-    itag: number;
-    container?: string;
-    mimeType?: string;
-    fps?: number;
-    width?: number;
-    height?: number;
-    bitrate?: number;
-    audioSampleRate?: string;
-    audioChannels?: number;
-  };
+  return combined[0];
 }
 
 export function isRateLimitedError(error: unknown): boolean {

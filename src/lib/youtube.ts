@@ -127,7 +127,7 @@ export async function downloadYoutubeVideoToLocal(url: string) {
     throw new Error("Live stream belum didukung untuk proses ini");
   }
 
-  const format = pickBestCombinedFormat(info.formats as Array<Record<string, unknown>>);
+  const format = pickBestCombinedFormat(info.formats);
   if (!format) {
     logger.error("missing_combined_format", { videoId: info.videoDetails.videoId });
     throw new Error("Format audio+video gabungan tidak ditemukan");

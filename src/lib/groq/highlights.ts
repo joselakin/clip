@@ -42,6 +42,11 @@ export type GroqClipEvaluation = {
   angle?: string;
 };
 
+type HighlightSelectionOptions = {
+  durationRule?: string;
+  extraRules?: string[];
+};
+
 function normalizeCandidates(input: unknown): GroqHighlightCandidate[] {
   if (!input || typeof input !== "object") {
     return [];
@@ -170,7 +175,8 @@ function normalizeClipEvaluations(input: unknown): GroqClipEvaluation[] {
 
 export async function selectHighlightsWithGroq(
   transcriptSegments: TranscriptForSelection[],
-  apiKey: string
+  apiKey: string,
+  options?: HighlightSelectionOptions
 ) {
   const requestedModel = process.env.GROQ_HIGHLIGHT_MODEL?.trim() || "openai/gpt-oss-120b";
   const endpoint =
@@ -199,10 +205,11 @@ export async function selectHighlightsWithGroq(
 
   const userPrompt = [
     "Pilih maksimal 6 kandidat clip dengan aturan:",
-    "- Durasi target tiap clip 20-45 detik",
+    options?.durationRule || "- Durasi target tiap clip 20-45 detik",
     "- Prioritaskan hook kuat, novelty, emosi, value, CTA",
     "- Hindari overlap berat antar kandidat",
     "- Gunakan timestamp yang ada pada transcript",
+    ...(options?.extraRules || []),
     "",
     "Format JSON wajib:",
     '{"candidates":[{"startMs":1234,"endMs":34567,"scoreTotal":0.92,"scoreText":0.90,"reason":"...","topic":"..."}] }',
