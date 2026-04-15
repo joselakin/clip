@@ -32,7 +32,7 @@ export function DashboardShell({ children, activeSection = "dashboard" }: Dashbo
 
       <DashboardTopNav onMenuToggle={() => setMenuOpen((prev) => !prev)} />
 
-      <main className="ml-0 lg:ml-64 pt-16 h-screen relative bg-surface overflow-hidden">{children}</main>
+      <main className="ml-0 lg:ml-64 pt-16 relative bg-surface min-h-screen overflow-x-hidden">{children}</main>
     </div>
   );
 }

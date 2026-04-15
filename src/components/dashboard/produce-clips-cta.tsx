@@ -17,12 +17,13 @@ export function ProduceClipsCta({
       <GradientButton
         onClick={onClick}
         disabled={disabled}
-        className="group relative px-12 py-5 rounded-full bg-gradient-to-br from-[#85adff] to-[#0c70ea] text-on-primary-fixed text-lg font-bold uppercase tracking-[0.1em] shadow-[0_0_40px_-10px_rgba(133,173,255,0.4)] hover:shadow-[0_0_60px_-5px_rgba(133,173,255,0.6)] disabled:opacity-60 disabled:cursor-not-allowed"
+        className="group relative w-full px-6 py-4 bg-white text-black text-sm font-black uppercase tracking-[0.12em] hover:bg-white/90 disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-between"
       >
         <span className="flex items-center gap-3">
           <MaterialIcon name="auto_videocam" filled />
           {isProcessing ? "Processing..." : "Produce Clips"}
         </span>
+        <MaterialIcon name="arrow_forward" className="transition-transform group-hover:translate-x-1" />
       </GradientButton>
     </div>
   );

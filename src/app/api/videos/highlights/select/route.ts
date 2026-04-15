@@ -4,7 +4,9 @@ import { Prisma } from "@prisma/client";
 import { isValidSessionToken, SESSION_COOKIE_NAME } from "@/lib/auth";
 import {
   getClipDurationPresetConfig,
+  parseClipCountTarget,
   parseClipDurationPreset,
+  type ClipCountTarget,
   type ClipDurationPreset,
 } from "@/lib/clip-duration";
 import { decryptSecret } from "@/lib/crypto";
@@ -41,6 +43,19 @@ function resolveDurationPreset(
 
   const metadataObj = asObject(metadata);
   return parseClipDurationPreset(metadataObj?.clipDurationPreset, fallback);
+}
+
+function resolveClipCountTarget(
+  rawCountTarget: unknown,
+  metadata: unknown,
+  fallback: ClipCountTarget = 6
+): ClipCountTarget {
+  if (typeof rawCountTarget === "number" || typeof rawCountTarget === "string") {
+    return parseClipCountTarget(rawCountTarget, fallback);
+  }
+
+  const metadataObj = asObject(metadata);
+  return parseClipCountTarget(metadataObj?.clipCountTarget, fallback);
 }
 
 function enforceDuration(
@@ -118,7 +133,11 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: false, message: "Unauthorized" }, { status: 401 });
   }
 
-  const body = (await request.json()) as { videoId?: string; durationPreset?: string };
+  const body = (await request.json()) as {
+    videoId?: string;
+    durationPreset?: string;
+    clipCountTarget?: string | number;
+  };
   const videoId = body.videoId?.trim() ?? "";
 
   if (!videoId) {
@@ -138,6 +157,7 @@ export async function POST(request: NextRequest) {
 
   const durationPreset = resolveDurationPreset(body.durationPreset, video.metadata);
   const durationConfig = getClipDurationPresetConfig(durationPreset);
+  const clipCountTarget = resolveClipCountTarget(body.clipCountTarget, video.metadata);
 
   const transcriptSegments = await prisma.transcriptSegment.findMany({
     where: { videoId },
@@ -202,6 +222,7 @@ export async function POST(request: NextRequest) {
           step: "transcript-to-highlight",
           transcriptCount: transcriptSegments.length,
           clipDurationPreset: durationPreset,
+          clipCountTarget,
           clipMinDurationMs: durationConfig.minDurationMs,
           clipMaxDurationMs: durationConfig.maxDurationMs,
         },
@@ -217,6 +238,7 @@ export async function POST(request: NextRequest) {
       model: process.env.GROQ_HIGHLIGHT_MODEL?.trim() || "gpt-oss-120b",
     });
     const selectionWithDuration = await selectHighlightsWithGroq(transcriptSegments, apiKey, {
+      maxCandidates: clipCountTarget,
       durationRule: durationConfig.promptRule,
       extraRules: durationConfig.extraPromptRule ? [durationConfig.extraPromptRule] : undefined,
     });
@@ -225,9 +247,10 @@ export async function POST(request: NextRequest) {
       model: selectionWithDuration.model,
       candidateCount: selectionWithDuration.candidates.length,
       clipDurationPreset: durationPreset,
+      clipCountTarget,
     });
 
-    const baseCandidates = selectionWithDuration.candidates.slice(0, 6).map((candidate) => {
+    const baseCandidates = selectionWithDuration.candidates.slice(0, clipCountTarget).map((candidate) => {
       const durationAligned = enforceDuration(
         candidate.startMs,
         candidate.endMs,
@@ -300,6 +323,7 @@ export async function POST(request: NextRequest) {
       jobId,
       originalCount: selectionWithDuration.candidates.length,
       clipDurationPreset: durationPreset,
+      clipCountTarget,
       normalizedCount: normalizedCandidates.length,
     });
     const existingMetadata = asObject(video.metadata) || {};
@@ -326,6 +350,7 @@ export async function POST(request: NextRequest) {
                 min: durationConfig.minDurationMs,
                 max: durationConfig.maxDurationMs,
               },
+              clipCountTarget,
               clipReview: {
                 model: evaluation.model,
                 recommendedTitle: candidate.review.recommendedTitle,
@@ -361,6 +386,7 @@ export async function POST(request: NextRequest) {
                 min: durationConfig.minDurationMs,
                 max: durationConfig.maxDurationMs,
               },
+              clipCountTarget,
               selectedCount: normalizedCandidates.length,
               selectedAt: new Date().toISOString(),
             },
@@ -383,6 +409,7 @@ export async function POST(request: NextRequest) {
             model: selectionWithDuration.model,
             reviewModel: evaluation.model,
             clipDurationPreset: durationPreset,
+            clipCountTarget,
           },
         },
       });
@@ -394,6 +421,7 @@ export async function POST(request: NextRequest) {
       selectedCount: normalizedCandidates.length,
       model: selectionWithDuration.model,
       clipDurationPreset: durationPreset,
+      clipCountTarget,
     });
 
     return NextResponse.json({
@@ -402,6 +430,7 @@ export async function POST(request: NextRequest) {
       highlights: {
         model: selectionWithDuration.model,
         clipDurationPreset: durationPreset,
+        clipCountTarget,
         reviewModel: evaluation.model,
         candidates: normalizedCandidates,
       },

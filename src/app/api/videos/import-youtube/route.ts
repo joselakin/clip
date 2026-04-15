@@ -4,7 +4,7 @@ import { mkdir, unlink as unlinkFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { isValidSessionToken, SESSION_COOKIE_NAME } from "@/lib/auth";
-import { parseClipDurationPreset } from "@/lib/clip-duration";
+import { parseClipCountTarget, parseClipDurationPreset } from "@/lib/clip-duration";
 import { createLogger } from "@/lib/logger";
 import { downloadYoutubeVideoToLocal, removeDownloadedFile } from "@/lib/youtube";
 import { prisma } from "@/lib/prisma";
@@ -75,6 +75,7 @@ type WatermarkInput = {
   renderLayout: "standard" | "framed";
   podcastTwoSpeakerMode: boolean;
   clipDurationPreset: ReturnType<typeof parseClipDurationPreset>;
+  clipCountTarget: ReturnType<typeof parseClipCountTarget>;
   text: string | null;
   logoFile: File | null;
 };
@@ -105,6 +106,7 @@ async function parseIncomingBody(request: NextRequest): Promise<{
       renderLayout?: string;
       podcastTwoSpeakerMode?: boolean | string;
       clipDurationPreset?: string;
+      clipCountTarget?: string | number;
     };
     const layoutRaw = String(body.renderLayout || "standard").trim().toLowerCase();
     return {
@@ -113,6 +115,7 @@ async function parseIncomingBody(request: NextRequest): Promise<{
         renderLayout: layoutRaw === "framed" ? "framed" : "standard",
         podcastTwoSpeakerMode: parseBooleanFlag(body.podcastTwoSpeakerMode),
         clipDurationPreset: parseClipDurationPreset(body.clipDurationPreset),
+        clipCountTarget: parseClipCountTarget(body.clipCountTarget),
         text: String(body.watermarkText || "").trim().slice(0, 120) || null,
         logoFile: null,
       },
@@ -129,6 +132,7 @@ async function parseIncomingBody(request: NextRequest): Promise<{
       renderLayout: layoutRaw === "framed" ? "framed" : "standard",
       podcastTwoSpeakerMode: parseBooleanFlag(form.get("podcastTwoSpeakerMode")),
       clipDurationPreset: parseClipDurationPreset(form.get("clipDurationPreset")),
+      clipCountTarget: parseClipCountTarget(form.get("clipCountTarget")),
       text: String(form.get("watermarkText") || "").trim().slice(0, 120) || null,
       logoFile: logoCandidate instanceof File && logoCandidate.size > 0 ? logoCandidate : null,
     },
@@ -189,6 +193,7 @@ export async function POST(request: NextRequest) {
             renderLayout: payload.watermark.renderLayout,
             podcastTwoSpeakerMode: payload.watermark.podcastTwoSpeakerMode,
             clipDurationPreset: payload.watermark.clipDurationPreset,
+            clipCountTarget: payload.watermark.clipCountTarget,
             watermark:
               payload.watermark.text || watermarkLogoStorageKey
                 ? {
@@ -257,6 +262,7 @@ export async function POST(request: NextRequest) {
           renderLayout: payload.watermark.renderLayout,
           podcastTwoSpeakerMode: payload.watermark.podcastTwoSpeakerMode,
           clipDurationPreset: payload.watermark.clipDurationPreset,
+          clipCountTarget: payload.watermark.clipCountTarget,
           ...(payload.watermark.text || watermarkLogoStorageKey
             ? {
                 watermark: {

@@ -1,6 +1,8 @@
 import { MaterialIcon } from "@/components/common/material-icon";
 import {
+  CLIP_COUNT_OPTIONS,
   CLIP_DURATION_PRESETS,
+  type ClipCountTarget,
   getClipDurationPresetConfig,
   type ClipDurationPreset,
 } from "@/lib/clip-duration";
@@ -20,6 +22,8 @@ type VideoSourceInputProps = {
   selectedWatermarkLogoName?: string | null;
   clipDurationPreset?: ClipDurationPreset;
   onClipDurationPresetChange?: (value: ClipDurationPreset) => void;
+  clipCountTarget?: ClipCountTarget;
+  onClipCountTargetChange?: (value: ClipCountTarget) => void;
   disabled?: boolean;
 };
 
@@ -38,16 +42,17 @@ export function VideoSourceInput({
   selectedWatermarkLogoName,
   clipDurationPreset = "under_1_minute",
   onClipDurationPresetChange,
+  clipCountTarget = 6,
+  onClipCountTargetChange,
   disabled = false,
 }: VideoSourceInputProps) {
   return (
-    <div className="relative group">
-      <div className="absolute -inset-0.5 bg-gradient-to-r from-[#85adff]/20 to-[#0c70ea]/20 rounded-2xl blur opacity-30 group-focus-within:opacity-100 transition duration-1000 group-focus-within:duration-200 pointer-events-none" />
-      <div className="relative flex items-center bg-surface-container-high rounded-2xl p-2 shadow-2xl">
-        <div className="flex-1 flex items-center px-6">
-          <MaterialIcon name="link" className="text-[#adaaaa] mr-4" />
+    <div className="space-y-3">
+      <div className="flex items-center bg-[#1b1b1b] border-l-4 border-white">
+        <div className="flex-1 flex items-center px-5">
+          <MaterialIcon name="link" className="text-white/60 mr-3" />
           <input
-            className="w-full bg-transparent border-none focus:ring-0 text-lg sm:text-xl font-medium text-white placeholder-[#5c5b5b] py-6"
+            className="w-full bg-transparent border-none focus:ring-0 text-sm sm:text-base font-medium text-white placeholder:text-white/40 py-4"
             placeholder="Paste YouTube link atau upload file"
             type="text"
             value={value}
@@ -57,13 +62,13 @@ export function VideoSourceInput({
         </div>
         <label
           htmlFor="dashboard-video-upload"
-          className="bg-surface-container-highest hover:bg-surface-bright p-6 rounded-xl transition-colors group/upload cursor-pointer"
+          className="bg-white text-black hover:bg-white/90 px-4 py-4 transition-colors cursor-pointer text-xs font-bold uppercase tracking-wider"
           aria-label="Upload file"
         >
-          <MaterialIcon
-            name="upload_file"
-            className="text-[#85adff] group-hover/upload:scale-110 transition-transform"
-          />
+          <span className="inline-flex items-center gap-2">
+            <MaterialIcon name="upload_file" className="text-base" />
+            Upload
+          </span>
         </label>
         <input
           id="dashboard-video-upload"
@@ -78,123 +83,154 @@ export function VideoSourceInput({
         />
       </div>
       {selectedFileName && (
-        <p className="mt-3 text-xs text-[#85adff] font-semibold tracking-wide">
+        <p className="text-xs text-white/70 font-semibold tracking-wide">
           Selected file: {selectedFileName}
         </p>
       )}
 
-      <div className="mt-4 rounded-xl border border-white/10 bg-[#121212]/80 p-4 space-y-3">
-        <p className="text-xs font-semibold uppercase tracking-wide text-[#c3c0bf]">Durasi Konten</p>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="border border-white/10 bg-[#1f1f1f] p-4 space-y-3">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-white/60">Jumlah Hasil Video</p>
 
-        <div className="grid grid-cols-2 gap-2">
-          {CLIP_DURATION_PRESETS.map((preset) => {
-            const config = getClipDurationPresetConfig(preset);
-            const isActive = clipDurationPreset === preset;
-            return (
-              <button
-                key={preset}
-                type="button"
-                disabled={disabled}
-                onClick={() => onClipDurationPresetChange?.(preset)}
-                className={`rounded-lg px-3 py-2 text-xs font-bold uppercase tracking-wide border transition-colors ${
-                  isActive
-                    ? "border-[#85adff]/70 bg-[#1a2640] text-[#9dc0ff]"
-                    : "border-white/15 bg-[#171717] text-[#bcb8b6] hover:border-white/30"
-                }`}
-              >
-                {config.label}
-              </button>
-            );
-          })}
+          <div className="grid grid-cols-3 gap-2">
+            {CLIP_COUNT_OPTIONS.map((count) => {
+              const isActive = clipCountTarget === count;
+              return (
+                <button
+                  key={count}
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => onClipCountTargetChange?.(count)}
+                  className={`px-3 py-2 text-xs font-bold uppercase tracking-wide border transition-colors ${
+                    isActive
+                      ? "border-white bg-white text-black"
+                      : "border-white/20 bg-[#171717] text-white/60 hover:text-white"
+                  }`}
+                >
+                  {count} video
+                </button>
+              );
+            })}
+          </div>
+
+          <p className="text-[11px] text-white/45">Pilih jumlah output clip. Maksimal 10 video per proses.</p>
         </div>
 
-        <p className="text-[11px] text-[#8f8b89]">
-          Atur gaya durasi clip: singkat, medium, panjang (maks ~5 menit), atau campuran otomatis.
-        </p>
+        <div className="border border-white/10 bg-[#1f1f1f] p-4 space-y-3">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-white/60">Durasi Konten</p>
+
+          <div className="grid grid-cols-2 gap-2">
+            {CLIP_DURATION_PRESETS.map((preset) => {
+              const config = getClipDurationPresetConfig(preset);
+              const isActive = clipDurationPreset === preset;
+              return (
+                <button
+                  key={preset}
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => onClipDurationPresetChange?.(preset)}
+                  className={`px-3 py-2 text-xs font-bold uppercase tracking-wide border transition-colors ${
+                    isActive
+                      ? "border-white bg-white text-black"
+                      : "border-white/20 bg-[#171717] text-white/60 hover:text-white"
+                  }`}
+                >
+                  {config.label}
+                </button>
+              );
+            })}
+          </div>
+
+          <p className="text-[11px] text-white/45">
+            Atur gaya durasi clip: singkat, medium, panjang (maks ~5 menit), atau campuran otomatis.
+          </p>
+        </div>
       </div>
 
-      <div className="mt-4 rounded-xl border border-white/10 bg-[#121212]/80 p-4 space-y-3">
-        <p className="text-xs font-semibold uppercase tracking-wide text-[#c3c0bf]">Layout Render</p>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="border border-white/10 bg-[#1f1f1f] p-4 space-y-3">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-white/60">Layout Render</p>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() => onRenderLayoutModeChange?.("standard")}
-            className={`rounded-lg px-3 py-2 text-xs font-bold uppercase tracking-wide border transition-colors ${
-              renderLayoutMode === "standard"
-                ? "border-[#85adff]/70 bg-[#1a2640] text-[#9dc0ff]"
-                : "border-white/15 bg-[#171717] text-[#bcb8b6] hover:border-white/30"
-            }`}
-          >
-            Layout Biasa
-          </button>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => onRenderLayoutModeChange?.("standard")}
+              className={`px-3 py-2 text-xs font-bold uppercase tracking-wide border transition-colors ${
+                renderLayoutMode === "standard"
+                  ? "border-white bg-white text-black"
+                  : "border-white/20 bg-[#171717] text-white/60 hover:text-white"
+              }`}
+            >
+              Layout Biasa
+            </button>
 
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() => onRenderLayoutModeChange?.("framed")}
-            className={`rounded-lg px-3 py-2 text-xs font-bold uppercase tracking-wide border transition-colors ${
-              renderLayoutMode === "framed"
-                ? "border-[#85adff]/70 bg-[#1a2640] text-[#9dc0ff]"
-                : "border-white/15 bg-[#171717] text-[#bcb8b6] hover:border-white/30"
-            }`}
-          >
-            Layout Frame
-          </button>
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => onRenderLayoutModeChange?.("framed")}
+              className={`px-3 py-2 text-xs font-bold uppercase tracking-wide border transition-colors ${
+                renderLayoutMode === "framed"
+                  ? "border-white bg-white text-black"
+                  : "border-white/20 bg-[#171717] text-white/60 hover:text-white"
+              }`}
+            >
+              Layout Frame
+            </button>
+          </div>
+
+          <p className="text-[11px] text-white/45">
+            Frame: area watermark atas, konten di tengah, subtitle di bawah, dengan background hitam.
+          </p>
         </div>
 
-        <p className="text-[11px] text-[#8f8b89]">
-          Frame: area watermark atas, konten di tengah, subtitle di bawah, dengan background hitam.
-        </p>
-      </div>
+        <div className="border border-white/10 bg-[#1f1f1f] p-4 space-y-3">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-white/60">
+            Podcast 2 Orang (Auto Camera Switch)
+          </p>
 
-      <div className="mt-4 rounded-xl border border-white/10 bg-[#121212]/80 p-4 space-y-3">
-        <p className="text-xs font-semibold uppercase tracking-wide text-[#c3c0bf]">
-          Podcast 2 Orang (Auto Camera Switch)
-        </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => onPodcastTwoSpeakerModeChange?.(false)}
+              className={`px-3 py-2 text-xs font-bold uppercase tracking-wide border transition-colors ${
+                !podcastTwoSpeakerMode
+                  ? "border-white bg-white text-black"
+                  : "border-white/20 bg-[#171717] text-white/60 hover:text-white"
+              }`}
+            >
+              Off
+            </button>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() => onPodcastTwoSpeakerModeChange?.(false)}
-            className={`rounded-lg px-3 py-2 text-xs font-bold uppercase tracking-wide border transition-colors ${
-              !podcastTwoSpeakerMode
-                ? "border-[#85adff]/70 bg-[#1a2640] text-[#9dc0ff]"
-                : "border-white/15 bg-[#171717] text-[#bcb8b6] hover:border-white/30"
-            }`}
-          >
-            Off
-          </button>
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => onPodcastTwoSpeakerModeChange?.(true)}
+              className={`px-3 py-2 text-xs font-bold uppercase tracking-wide border transition-colors ${
+                podcastTwoSpeakerMode
+                  ? "border-white bg-white text-black"
+                  : "border-white/20 bg-[#171717] text-white/60 hover:text-white"
+              }`}
+            >
+              On
+            </button>
+          </div>
 
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() => onPodcastTwoSpeakerModeChange?.(true)}
-            className={`rounded-lg px-3 py-2 text-xs font-bold uppercase tracking-wide border transition-colors ${
-              podcastTwoSpeakerMode
-                ? "border-[#85adff]/70 bg-[#1a2640] text-[#9dc0ff]"
-                : "border-white/15 bg-[#171717] text-[#bcb8b6] hover:border-white/30"
-            }`}
-          >
-            On
-          </button>
+          <p className="text-[11px] text-white/45">
+            Saat aktif, sistem akan mencoba mendeteksi dua speaker dan mengganti crop kamera secara
+            otomatis mengikuti speaker yang sedang bicara. Mode ini lebih berat secara komputasi.
+          </p>
         </div>
-
-        <p className="text-[11px] text-[#8f8b89]">
-          Saat aktif, sistem akan mencoba mendeteksi dua speaker dan mengganti crop kamera secara
-          otomatis mengikuti speaker yang sedang bicara. Mode ini lebih berat secara komputasi.
-        </p>
       </div>
 
-      <div className="mt-4 rounded-xl border border-white/10 bg-[#121212]/80 p-4 space-y-3">
-        <p className="text-xs font-semibold uppercase tracking-wide text-[#c3c0bf]">
+      <div className="border border-white/10 bg-[#1f1f1f] p-4 space-y-3">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-white/60">
           Optional Watermark
         </p>
 
         <input
-          className="w-full bg-[#1a1a1a] border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-[#666] focus:outline-none focus:ring-2 focus:ring-[#85adff]/30"
+          className="w-full bg-black border border-white/20 px-3 py-2 text-sm text-white placeholder:text-white/35 focus:outline-none focus:ring-1 focus:ring-white/50"
           placeholder="Watermark teks (contoh: @brandkamu)"
           type="text"
           value={watermarkText}
@@ -206,9 +242,9 @@ export function VideoSourceInput({
         <div className="flex items-center gap-3">
           <label
             htmlFor="dashboard-watermark-logo"
-            className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold border border-white/20 text-[#d2d0cf] hover:border-[#85adff]/60 cursor-pointer transition-colors"
+            className="inline-flex items-center gap-2 px-3 py-2 text-xs font-semibold border border-white/20 text-white/80 hover:text-white hover:border-white/50 cursor-pointer transition-colors"
           >
-            <MaterialIcon name="image" className="text-[#85adff]" />
+            <MaterialIcon name="image" className="text-white/80" />
             Upload Logo Watermark
           </label>
           <input
@@ -223,11 +259,11 @@ export function VideoSourceInput({
             }}
           />
           {selectedWatermarkLogoName && (
-            <span className="text-xs text-[#85adff] font-semibold">{selectedWatermarkLogoName}</span>
+            <span className="text-xs text-white/80 font-semibold">{selectedWatermarkLogoName}</span>
           )}
         </div>
 
-        <p className="text-[11px] text-[#8f8b89]">
+        <p className="text-[11px] text-white/45">
           Watermark akan ditempatkan di tengah video dengan opacity rendah agar tidak mengganggu konten.
         </p>
       </div>

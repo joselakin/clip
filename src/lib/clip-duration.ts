@@ -5,9 +5,13 @@ export const CLIP_DURATION_PRESETS = [
   "mixed",
 ] as const;
 
+export const CLIP_COUNT_OPTIONS = [5, 6, 10] as const;
+
 export type ClipDurationPreset = (typeof CLIP_DURATION_PRESETS)[number];
+export type ClipCountTarget = (typeof CLIP_COUNT_OPTIONS)[number];
 
 export const DEFAULT_CLIP_DURATION_PRESET: ClipDurationPreset = "under_1_minute";
+export const DEFAULT_CLIP_COUNT_TARGET: ClipCountTarget = 6;
 
 export type ClipDurationPresetConfig = {
   preset: ClipDurationPreset;
@@ -78,4 +82,16 @@ export function parseClipDurationPreset(
 
 export function getClipDurationPresetConfig(preset: ClipDurationPreset): ClipDurationPresetConfig {
   return CLIP_DURATION_CONFIGS[preset];
+}
+
+export function parseClipCountTarget(
+  value: unknown,
+  fallback: ClipCountTarget = DEFAULT_CLIP_COUNT_TARGET
+): ClipCountTarget {
+  const parsed = Number(value);
+  if (parsed === 5 || parsed === 6 || parsed === 10) {
+    return parsed;
+  }
+
+  return fallback;
 }

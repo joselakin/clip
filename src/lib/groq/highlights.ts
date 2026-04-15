@@ -43,6 +43,7 @@ export type GroqClipEvaluation = {
 };
 
 type HighlightSelectionOptions = {
+  maxCandidates?: number;
   durationRule?: string;
   extraRules?: string[];
 };
@@ -178,6 +179,7 @@ export async function selectHighlightsWithGroq(
   apiKey: string,
   options?: HighlightSelectionOptions
 ) {
+  const maxCandidates = Math.max(1, Math.min(10, Math.round(options?.maxCandidates ?? 6)));
   const requestedModel = process.env.GROQ_HIGHLIGHT_MODEL?.trim() || "openai/gpt-oss-120b";
   const endpoint =
     process.env.GROQ_CHAT_ENDPOINT?.trim() || "https://api.groq.com/openai/v1/chat/completions";
@@ -204,7 +206,7 @@ export async function selectHighlightsWithGroq(
     "Kamu adalah AI editor untuk social media short clips. Pilih segmen dengan potensi engagement tinggi dari transcript. Keluaran HARUS JSON valid tanpa markdown.";
 
   const userPrompt = [
-    "Pilih maksimal 6 kandidat clip dengan aturan:",
+    `Pilih maksimal ${maxCandidates} kandidat clip dengan aturan:`,
     options?.durationRule || "- Durasi target tiap clip 20-45 detik",
     "- Prioritaskan hook kuat, novelty, emosi, value, CTA",
     "- Hindari overlap berat antar kandidat",

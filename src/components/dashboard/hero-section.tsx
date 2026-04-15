@@ -1,11 +1,12 @@
 export function HeroSection() {
   return (
-    <div className="w-full text-center mb-12">
-      <h1 className="font-headline text-4xl sm:text-5xl font-extrabold tracking-tight mb-4 bg-gradient-to-b from-white to-[#adaaaa] bg-clip-text text-transparent">
-        Create magic from motion.
+    <div className="w-full mb-2 space-y-2">
+      <span className="block font-label text-[10px] uppercase tracking-[0.2em] text-white/55">Source Control</span>
+      <h1 className="font-headline text-3xl sm:text-4xl font-black tracking-tight text-white uppercase">
+        Generate Master Clips
       </h1>
-      <p className="font-body text-[#adaaaa] text-base sm:text-lg max-w-xl mx-auto">
-        Paste your video source below. Master Suite AI will automatically identify the most viral-worthy moments.
+      <p className="font-body text-white/60 text-sm sm:text-base max-w-2xl">
+        Paste link video atau upload lokal, lalu atur konfigurasi clip sebelum proses otomatis dijalankan.
       </p>
     </div>
   );

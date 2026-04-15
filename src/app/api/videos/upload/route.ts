@@ -5,7 +5,7 @@ import path from "node:path";
 import { NextRequest, NextResponse } from "next/server";
 
 import { isValidSessionToken, SESSION_COOKIE_NAME } from "@/lib/auth";
-import { parseClipDurationPreset } from "@/lib/clip-duration";
+import { parseClipCountTarget, parseClipDurationPreset } from "@/lib/clip-duration";
 import { createLogger } from "@/lib/logger";
 import { probeVideoMetadata } from "@/lib/media";
 import { prisma } from "@/lib/prisma";
@@ -93,6 +93,7 @@ type WatermarkInput = {
   renderLayout: "standard" | "framed";
   podcastTwoSpeakerMode: boolean;
   clipDurationPreset: ReturnType<typeof parseClipDurationPreset>;
+  clipCountTarget: ReturnType<typeof parseClipCountTarget>;
   text: string | null;
   logoFile: File | null;
 };
@@ -111,6 +112,7 @@ function parseWatermarkInput(form: FormData): WatermarkInput {
   const renderLayout: "standard" | "framed" = layoutRaw === "framed" ? "framed" : "standard";
   const podcastTwoSpeakerMode = parseBooleanFlag(form.get("podcastTwoSpeakerMode"));
   const clipDurationPreset = parseClipDurationPreset(form.get("clipDurationPreset"));
+  const clipCountTarget = parseClipCountTarget(form.get("clipCountTarget"));
   const rawText = String(form.get("watermarkText") || "").trim();
   const text = rawText.slice(0, 120);
   const logoCandidate = form.get("watermarkLogo");
@@ -120,6 +122,7 @@ function parseWatermarkInput(form: FormData): WatermarkInput {
     renderLayout,
     podcastTwoSpeakerMode,
     clipDurationPreset,
+    clipCountTarget,
     text: text || null,
     logoFile,
   };
@@ -198,6 +201,7 @@ export async function POST(request: NextRequest) {
             renderLayout: watermarkInput.renderLayout,
             podcastTwoSpeakerMode: watermarkInput.podcastTwoSpeakerMode,
             clipDurationPreset: watermarkInput.clipDurationPreset,
+            clipCountTarget: watermarkInput.clipCountTarget,
             watermark:
               watermarkInput.text || watermarkLogoStorageKey
                 ? {
@@ -265,6 +269,7 @@ export async function POST(request: NextRequest) {
           renderLayout: watermarkInput.renderLayout,
           podcastTwoSpeakerMode: watermarkInput.podcastTwoSpeakerMode,
           clipDurationPreset: watermarkInput.clipDurationPreset,
+          clipCountTarget: watermarkInput.clipCountTarget,
           ...(watermarkInput.text || watermarkLogoStorageKey
             ? {
                 watermark: {

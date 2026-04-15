@@ -3,12 +3,15 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
-import { BentoStatsCards } from "@/components/dashboard/bento-stats-cards";
 import { HeroSection } from "@/components/dashboard/hero-section";
 import { ProduceClipsCta } from "@/components/dashboard/produce-clips-cta";
 import { VideoSourceInput } from "@/components/dashboard/video-source-input";
 import { WorkflowChips } from "@/components/dashboard/workflow-chips";
-import { type ClipDurationPreset } from "@/lib/clip-duration";
+import {
+  DEFAULT_CLIP_COUNT_TARGET,
+  type ClipCountTarget,
+  type ClipDurationPreset,
+} from "@/lib/clip-duration";
 
 type TranscriptLine = {
   startMs: number;
@@ -53,28 +56,28 @@ const DEFAULT_PIPELINE_STEPS: PipelineStep[] = [
 
 function getStepDotClass(status: PipelineStepStatus): string {
   if (status === "done") {
-    return "bg-[#22c55e]";
+    return "bg-white";
   }
   if (status === "running") {
-    return "bg-[#85adff] animate-pulse";
+    return "bg-white animate-pulse";
   }
   if (status === "error") {
-    return "bg-[#ff716c]";
+    return "bg-white/50";
   }
   return "bg-white/20";
 }
 
 function getStepLabelClass(status: PipelineStepStatus): string {
   if (status === "done") {
-    return "text-[#22c55e]";
+    return "text-white";
   }
   if (status === "running") {
-    return "text-[#85adff]";
+    return "text-white";
   }
   if (status === "error") {
-    return "text-[#ff716c]";
+    return "text-white/70";
   }
-  return "text-[#c3c0bf]";
+  return "text-white/60";
 }
 
 function formatMs(ms: number): string {
@@ -95,6 +98,7 @@ export function DashboardMain() {
   const [watermarkText, setWatermarkText] = useState("");
   const [watermarkLogoFile, setWatermarkLogoFile] = useState<File | null>(null);
   const [clipDurationPreset, setClipDurationPreset] = useState<ClipDurationPreset>("under_1_minute");
+  const [clipCountTarget, setClipCountTarget] = useState<ClipCountTarget>(DEFAULT_CLIP_COUNT_TARGET);
   const [processing, setProcessing] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [isError, setIsError] = useState(false);
@@ -148,6 +152,7 @@ export function DashboardMain() {
         formData.append("renderLayout", renderLayoutMode);
         formData.append("podcastTwoSpeakerMode", podcastModeEnabled ? "true" : "false");
         formData.append("clipDurationPreset", clipDurationPreset);
+        formData.append("clipCountTarget", String(clipCountTarget));
         if (normalizedWatermarkText) {
           formData.append("watermarkText", normalizedWatermarkText);
         }
@@ -168,6 +173,7 @@ export function DashboardMain() {
         formData.append("renderLayout", renderLayoutMode);
         formData.append("podcastTwoSpeakerMode", podcastModeEnabled ? "true" : "false");
         formData.append("clipDurationPreset", clipDurationPreset);
+        formData.append("clipCountTarget", String(clipCountTarget));
         if (normalizedWatermarkText) {
           formData.append("watermarkText", normalizedWatermarkText);
         }
@@ -220,7 +226,7 @@ export function DashboardMain() {
       const transcribeResponse = await fetch("/api/videos/transcribe", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ videoId: importedVideoId, durationPreset: clipDurationPreset }),
+        body: JSON.stringify({ videoId: importedVideoId }),
       });
 
       const transcribeResult = (await transcribeResponse.json()) as {
@@ -255,7 +261,11 @@ export function DashboardMain() {
       const highlightResponse = await fetch("/api/videos/highlights/select", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ videoId: importedVideoId }),
+        body: JSON.stringify({
+          videoId: importedVideoId,
+          durationPreset: clipDurationPreset,
+          clipCountTarget,
+        }),
       });
 
       const highlightResult = (await highlightResponse.json()) as {
@@ -365,6 +375,7 @@ export function DashboardMain() {
       setWatermarkText("");
       setWatermarkLogoFile(null);
       setClipDurationPreset("under_1_minute");
+      setClipCountTarget(DEFAULT_CLIP_COUNT_TARGET);
       redirectVideoId = importedVideoId;
     } catch {
       markStep(activeStep, "error", "Terjadi kesalahan jaringan saat memproses step ini.");
@@ -383,67 +394,45 @@ export function DashboardMain() {
     processing || pipelineSteps.some((step) => step.status !== "pending");
 
   return (
-    <>
-      <div className="absolute inset-0 pointer-events-none overflow-hidden">
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] bg-[#85adff]/5 rounded-full blur-[120px]" />
+    <div className="relative z-10 w-full px-4 lg:px-8 py-8 sm:py-10 space-y-6">
+      <div className="border border-white/10 bg-[#171717] p-4 sm:p-6 space-y-5">
+        <HeroSection />
+        <VideoSourceInput
+          value={url}
+          onChange={setUrl}
+          onFileSelect={setSelectedFile}
+          selectedFileName={selectedFile?.name || null}
+          renderLayoutMode={renderLayoutMode}
+          onRenderLayoutModeChange={setRenderLayoutMode}
+          podcastTwoSpeakerMode={podcastTwoSpeakerMode}
+          onPodcastTwoSpeakerModeChange={setPodcastTwoSpeakerMode}
+          watermarkText={watermarkText}
+          onWatermarkTextChange={setWatermarkText}
+          onWatermarkLogoSelect={setWatermarkLogoFile}
+          selectedWatermarkLogoName={watermarkLogoFile?.name || null}
+          clipDurationPreset={clipDurationPreset}
+          onClipDurationPresetChange={setClipDurationPreset}
+          clipCountTarget={clipCountTarget}
+          onClipCountTargetChange={setClipCountTarget}
+          disabled={processing}
+        />
+        <ProduceClipsCta onClick={handleProduce} disabled={processing} isProcessing={processing} />
+        {message && (
+          <p className={`text-center text-sm ${isError ? "text-white/70" : "text-white/85"}`}>{message}</p>
+        )}
       </div>
 
-      <div className="relative z-10 h-full flex flex-col items-center justify-center px-4 max-w-5xl mx-auto">
-        <HeroSection />
-
-        <div className="w-full max-w-3xl space-y-8">
-          <VideoSourceInput
-            value={url}
-            onChange={setUrl}
-            onFileSelect={setSelectedFile}
-            selectedFileName={selectedFile?.name || null}
-            renderLayoutMode={renderLayoutMode}
-            onRenderLayoutModeChange={setRenderLayoutMode}
-            podcastTwoSpeakerMode={podcastTwoSpeakerMode}
-            onPodcastTwoSpeakerModeChange={setPodcastTwoSpeakerMode}
-            watermarkText={watermarkText}
-            onWatermarkTextChange={setWatermarkText}
-            onWatermarkLogoSelect={setWatermarkLogoFile}
-            selectedWatermarkLogoName={watermarkLogoFile?.name || null}
-            clipDurationPreset={clipDurationPreset}
-            onClipDurationPresetChange={setClipDurationPreset}
-            disabled={processing}
-          />
-          <ProduceClipsCta onClick={handleProduce} disabled={processing} isProcessing={processing} />
-
-          {message && (
-            <p className={`text-center text-sm ${isError ? "text-[#ff716c]" : "text-[#85adff]"}`}>{message}</p>
-          )}
-
-          {showPipelineProgress && (
-            <div className="rounded-xl border border-white/10 bg-[#121212]/85 p-4 sm:p-5 space-y-3">
-              <h3 className="text-sm font-bold tracking-wide text-white uppercase">Pipeline Status</h3>
-              <div className="space-y-2">
-                {pipelineSteps.map((step) => (
-                  <div
-                    key={step.id}
-                    className="flex items-center justify-between gap-3 rounded-lg border border-white/5 bg-black/20 px-3 py-2"
-                  >
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className={`h-2.5 w-2.5 rounded-full ${getStepDotClass(step.status)}`} />
-                      <span className={`text-sm font-semibold ${getStepLabelClass(step.status)}`}>
-                        {step.label}
-                      </span>
-                    </div>
-                    <span className="text-xs text-[#b8b5b4] text-right">{step.detail}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
+      <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
+        <div className="xl:col-span-8 space-y-6">
           {transcriptLines.length > 0 && (
-            <div className="rounded-xl border border-white/10 bg-[#131313]/80 p-4 sm:p-5 space-y-3">
-              <h3 className="text-sm font-bold tracking-wide text-white uppercase">Transcript Preview</h3>
+            <div className="border border-white/10 bg-[#171717] p-4 sm:p-5 space-y-3">
+              <h3 className="text-[10px] font-semibold tracking-[0.2em] text-white/70 uppercase">
+                Transcript Preview
+              </h3>
               <div className="space-y-2 max-h-56 overflow-auto pr-1">
                 {transcriptLines.map((line, index) => (
-                  <div key={`${line.startMs}-${line.endMs}-${index}`} className="text-sm text-[#d2d0cf]">
-                    <span className="inline-block min-w-28 text-[#85adff] font-semibold">
+                  <div key={`${line.startMs}-${line.endMs}-${index}`} className="text-sm text-white/80">
+                    <span className="inline-block min-w-28 text-white font-semibold">
                       {formatMs(line.startMs)} - {formatMs(line.endMs)}
                     </span>
                     <span>{line.text}</span>
@@ -454,46 +443,21 @@ export function DashboardMain() {
           )}
 
           {highlightLines.length > 0 && (
-            <div className="rounded-xl border border-[#85adff]/30 bg-[#0f1726]/60 p-4 sm:p-5 space-y-3">
-              <h3 className="text-sm font-bold tracking-wide text-white uppercase">AI Highlight Candidates</h3>
-              <div className="space-y-3 max-h-64 overflow-auto pr-1">
+            <div className="border border-white/10 bg-[#171717] p-4 sm:p-5 space-y-3">
+              <h3 className="text-[10px] font-semibold tracking-[0.2em] text-white/70 uppercase">
+                AI Highlight Candidates
+              </h3>
+              <div className="space-y-3 max-h-72 overflow-auto pr-1">
                 {highlightLines.map((line, index) => (
-                  <div key={`${line.startMs}-${line.endMs}-${index}`} className="text-sm text-[#d2d0cf] space-y-1">
+                  <div key={`${line.startMs}-${line.endMs}-${index}`} className="text-sm text-white/80 space-y-1">
                     <div className="flex flex-wrap items-center gap-3">
-                      <span className="inline-block min-w-28 text-[#85adff] font-semibold">
+                      <span className="inline-block min-w-28 text-white font-semibold">
                         {formatMs(line.startMs)} - {formatMs(line.endMs)}
                       </span>
-                      <span className="text-[#ffd16c] font-semibold">Score: {line.scoreTotal.toFixed(2)}</span>
-                      {line.topic && <span className="text-[#adaaaa] uppercase text-xs">{line.topic}</span>}
+                      <span className="text-white/70 font-semibold">Score: {line.scoreTotal.toFixed(2)}</span>
+                      {line.topic && <span className="text-white/55 uppercase text-xs">{line.topic}</span>}
                     </div>
-                    <p className="text-[#c3c0bf]">{line.reason}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {renderedClips.length > 0 && (
-            <div className="rounded-xl border border-[#22c55e]/30 bg-[#0d1f16]/60 p-4 sm:p-5 space-y-3">
-              <div className="flex items-center justify-between gap-3">
-                <h3 className="text-sm font-bold tracking-wide text-white uppercase">Rendered Clips</h3>
-                <a
-                  href="/library"
-                  className="text-xs font-bold uppercase tracking-wide text-[#85adff] hover:text-[#a8c4ff]"
-                >
-                  Open Library
-                </a>
-              </div>
-              <div className="space-y-2 max-h-56 overflow-auto pr-1">
-                {renderedClips.map((clip) => (
-                  <div key={clip.id} className="text-sm text-[#d2d0cf]">
-                    <span className="inline-block min-w-28 text-[#22c55e] font-semibold">
-                      {formatMs(clip.startMs)} - {formatMs(clip.endMs)}
-                    </span>
-                    <span className="text-[#c3c0bf]">{clip.outputFileKey}</span>
-                    {clip.subtitleMode === "hard" && (
-                      <span className="ml-2 text-[#85adff] text-xs uppercase">burn-in subtitle</span>
-                    )}
+                    <p className="text-white/70">{line.reason}</p>
                   </div>
                 ))}
               </div>
@@ -501,10 +465,61 @@ export function DashboardMain() {
           )}
         </div>
 
-        <WorkflowChips />
-      </div>
+        <div className="xl:col-span-4 space-y-6">
+          {showPipelineProgress && (
+            <div className="border border-white/10 bg-[#171717] p-4 sm:p-5 space-y-3">
+              <h3 className="text-[10px] font-semibold tracking-[0.2em] text-white/70 uppercase">Pipeline Status</h3>
+              <div className="space-y-2">
+                {pipelineSteps.map((step) => (
+                  <div
+                    key={step.id}
+                    className="flex items-center justify-between gap-3 border border-white/10 bg-black px-3 py-2"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className={`h-2.5 w-2.5 rounded-full ${getStepDotClass(step.status)}`} />
+                      <span className={`text-sm font-semibold ${getStepLabelClass(step.status)}`}>{step.label}</span>
+                    </div>
+                    <span className="text-xs text-white/60 text-right">{step.detail}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
-      <BentoStatsCards />
-    </>
+          {renderedClips.length > 0 && (
+            <div className="border border-white/10 bg-[#171717] p-4 sm:p-5 space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-[10px] font-semibold tracking-[0.2em] text-white/70 uppercase">
+                  Rendered Clips
+                </h3>
+                <a
+                  href="/library"
+                  className="text-xs font-bold uppercase tracking-wide text-white hover:text-white/80"
+                >
+                  Open Library
+                </a>
+              </div>
+              <div className="space-y-2 max-h-72 overflow-auto pr-1">
+                {renderedClips.map((clip) => (
+                  <div key={clip.id} className="text-sm text-white/80">
+                    <span className="inline-block min-w-28 text-white font-semibold">
+                      {formatMs(clip.startMs)} - {formatMs(clip.endMs)}
+                    </span>
+                    <span className="text-white/65">{clip.outputFileKey}</span>
+                    {clip.subtitleMode === "hard" && (
+                      <span className="ml-2 text-white/70 text-xs uppercase">burn-in subtitle</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="pb-2">
+            <WorkflowChips />
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
