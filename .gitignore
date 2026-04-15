@@ -61,3 +61,6 @@ next-env.d.ts
 
 # superpowers docs artifacts
 docs/superpowers/
+
+# editor swap files
+*.swp
