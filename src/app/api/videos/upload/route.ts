@@ -90,13 +90,24 @@ async function persistWatermarkLogo(file: File): Promise<string> {
 
 type WatermarkInput = {
   renderLayout: "standard" | "framed";
+  podcastTwoSpeakerMode: boolean;
   text: string | null;
   logoFile: File | null;
 };
 
+function parseBooleanFlag(value: FormDataEntryValue | null): boolean {
+  if (typeof value !== "string") {
+    return false;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
 function parseWatermarkInput(form: FormData): WatermarkInput {
   const layoutRaw = String(form.get("renderLayout") || "standard").trim().toLowerCase();
   const renderLayout: "standard" | "framed" = layoutRaw === "framed" ? "framed" : "standard";
+  const podcastTwoSpeakerMode = parseBooleanFlag(form.get("podcastTwoSpeakerMode"));
   const rawText = String(form.get("watermarkText") || "").trim();
   const text = rawText.slice(0, 120);
   const logoCandidate = form.get("watermarkLogo");
@@ -104,6 +115,7 @@ function parseWatermarkInput(form: FormData): WatermarkInput {
 
   return {
     renderLayout,
+    podcastTwoSpeakerMode,
     text: text || null,
     logoFile,
   };
@@ -180,6 +192,7 @@ export async function POST(request: NextRequest) {
           metadata: {
             ...oldMetadata,
             renderLayout: watermarkInput.renderLayout,
+            podcastTwoSpeakerMode: watermarkInput.podcastTwoSpeakerMode,
             watermark:
               watermarkInput.text || watermarkLogoStorageKey
                 ? {
@@ -245,6 +258,7 @@ export async function POST(request: NextRequest) {
           uploadedAt: new Date().toISOString(),
           originalMimeType: file.type || null,
           renderLayout: watermarkInput.renderLayout,
+          podcastTwoSpeakerMode: watermarkInput.podcastTwoSpeakerMode,
           ...(watermarkInput.text || watermarkLogoStorageKey
             ? {
                 watermark: {

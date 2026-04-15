@@ -7,6 +7,8 @@ type VideoSourceInputProps = {
   selectedFileName?: string | null;
   renderLayoutMode?: "standard" | "framed";
   onRenderLayoutModeChange?: (value: "standard" | "framed") => void;
+  podcastTwoSpeakerMode?: boolean;
+  onPodcastTwoSpeakerModeChange?: (value: boolean) => void;
   watermarkText?: string;
   onWatermarkTextChange?: (value: string) => void;
   onWatermarkLogoSelect?: (file: File | null) => void;
@@ -21,6 +23,8 @@ export function VideoSourceInput({
   selectedFileName,
   renderLayoutMode = "standard",
   onRenderLayoutModeChange,
+  podcastTwoSpeakerMode = false,
+  onPodcastTwoSpeakerModeChange,
   watermarkText = "",
   onWatermarkTextChange,
   onWatermarkLogoSelect,
@@ -103,6 +107,45 @@ export function VideoSourceInput({
 
         <p className="text-[11px] text-[#8f8b89]">
           Frame: area watermark atas, konten di tengah, subtitle di bawah, dengan background hitam.
+        </p>
+      </div>
+
+      <div className="mt-4 rounded-xl border border-white/10 bg-[#121212]/80 p-4 space-y-3">
+        <p className="text-xs font-semibold uppercase tracking-wide text-[#c3c0bf]">
+          Podcast 2 Orang (Auto Camera Switch)
+        </p>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => onPodcastTwoSpeakerModeChange?.(false)}
+            className={`rounded-lg px-3 py-2 text-xs font-bold uppercase tracking-wide border transition-colors ${
+              !podcastTwoSpeakerMode
+                ? "border-[#85adff]/70 bg-[#1a2640] text-[#9dc0ff]"
+                : "border-white/15 bg-[#171717] text-[#bcb8b6] hover:border-white/30"
+            }`}
+          >
+            Off
+          </button>
+
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => onPodcastTwoSpeakerModeChange?.(true)}
+            className={`rounded-lg px-3 py-2 text-xs font-bold uppercase tracking-wide border transition-colors ${
+              podcastTwoSpeakerMode
+                ? "border-[#85adff]/70 bg-[#1a2640] text-[#9dc0ff]"
+                : "border-white/15 bg-[#171717] text-[#bcb8b6] hover:border-white/30"
+            }`}
+          >
+            On
+          </button>
+        </div>
+
+        <p className="text-[11px] text-[#8f8b89]">
+          Saat aktif, sistem akan mencoba mendeteksi dua speaker dan mengganti crop kamera secara
+          otomatis mengikuti speaker yang sedang bicara. Mode ini lebih berat secara komputasi.
         </p>
       </div>
 

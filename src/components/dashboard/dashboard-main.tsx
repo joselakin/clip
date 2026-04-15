@@ -90,6 +90,7 @@ export function DashboardMain() {
   const [url, setUrl] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [renderLayoutMode, setRenderLayoutMode] = useState<"standard" | "framed">("standard");
+  const [podcastTwoSpeakerMode, setPodcastTwoSpeakerMode] = useState(false);
   const [watermarkText, setWatermarkText] = useState("");
   const [watermarkLogoFile, setWatermarkLogoFile] = useState<File | null>(null);
   const [processing, setProcessing] = useState(false);
@@ -115,6 +116,7 @@ export function DashboardMain() {
     let redirectVideoId: string | null = null;
     const useUpload = Boolean(selectedFile);
     const normalizedWatermarkText = watermarkText.trim().slice(0, 120);
+    const podcastModeEnabled = podcastTwoSpeakerMode;
 
     if (!useUpload && !url.trim()) {
       setIsError(true);
@@ -142,6 +144,7 @@ export function DashboardMain() {
         const formData = new FormData();
         formData.append("file", selectedFile as File);
         formData.append("renderLayout", renderLayoutMode);
+        formData.append("podcastTwoSpeakerMode", podcastModeEnabled ? "true" : "false");
         if (normalizedWatermarkText) {
           formData.append("watermarkText", normalizedWatermarkText);
         }
@@ -160,6 +163,7 @@ export function DashboardMain() {
         const formData = new FormData();
         formData.append("url", url.trim());
         formData.append("renderLayout", renderLayoutMode);
+        formData.append("podcastTwoSpeakerMode", podcastModeEnabled ? "true" : "false");
         if (normalizedWatermarkText) {
           formData.append("watermarkText", normalizedWatermarkText);
         }
@@ -353,6 +357,7 @@ export function DashboardMain() {
       setUrl("");
       setSelectedFile(null);
       setRenderLayoutMode("standard");
+      setPodcastTwoSpeakerMode(false);
       setWatermarkText("");
       setWatermarkLogoFile(null);
       redirectVideoId = importedVideoId;
@@ -389,6 +394,8 @@ export function DashboardMain() {
             selectedFileName={selectedFile?.name || null}
             renderLayoutMode={renderLayoutMode}
             onRenderLayoutModeChange={setRenderLayoutMode}
+            podcastTwoSpeakerMode={podcastTwoSpeakerMode}
+            onPodcastTwoSpeakerModeChange={setPodcastTwoSpeakerMode}
             watermarkText={watermarkText}
             onWatermarkTextChange={setWatermarkText}
             onWatermarkLogoSelect={setWatermarkLogoFile}

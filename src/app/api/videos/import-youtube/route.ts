@@ -72,9 +72,23 @@ async function persistWatermarkLogo(file: File): Promise<string> {
 
 type WatermarkInput = {
   renderLayout: "standard" | "framed";
+  podcastTwoSpeakerMode: boolean;
   text: string | null;
   logoFile: File | null;
 };
+
+function parseBooleanFlag(value: unknown): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (typeof value !== "string") {
+    return false;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
 
 async function parseIncomingBody(request: NextRequest): Promise<{
   url: string;
@@ -83,12 +97,18 @@ async function parseIncomingBody(request: NextRequest): Promise<{
   const contentType = request.headers.get("content-type") || "";
 
   if (contentType.includes("application/json")) {
-    const body = (await request.json()) as { url?: string; watermarkText?: string; renderLayout?: string };
+    const body = (await request.json()) as {
+      url?: string;
+      watermarkText?: string;
+      renderLayout?: string;
+      podcastTwoSpeakerMode?: boolean | string;
+    };
     const layoutRaw = String(body.renderLayout || "standard").trim().toLowerCase();
     return {
       url: body.url?.trim() ?? "",
       watermark: {
         renderLayout: layoutRaw === "framed" ? "framed" : "standard",
+        podcastTwoSpeakerMode: parseBooleanFlag(body.podcastTwoSpeakerMode),
         text: String(body.watermarkText || "").trim().slice(0, 120) || null,
         logoFile: null,
       },
@@ -103,6 +123,7 @@ async function parseIncomingBody(request: NextRequest): Promise<{
     url: String(form.get("url") || "").trim(),
     watermark: {
       renderLayout: layoutRaw === "framed" ? "framed" : "standard",
+      podcastTwoSpeakerMode: parseBooleanFlag(form.get("podcastTwoSpeakerMode")),
       text: String(form.get("watermarkText") || "").trim().slice(0, 120) || null,
       logoFile: logoCandidate instanceof File && logoCandidate.size > 0 ? logoCandidate : null,
     },
@@ -161,6 +182,7 @@ export async function POST(request: NextRequest) {
           metadata: {
             ...oldMetadata,
             renderLayout: payload.watermark.renderLayout,
+            podcastTwoSpeakerMode: payload.watermark.podcastTwoSpeakerMode,
             watermark:
               payload.watermark.text || watermarkLogoStorageKey
                 ? {
@@ -227,6 +249,7 @@ export async function POST(request: NextRequest) {
           channelName: downloaded.channelName,
           importedAt: new Date().toISOString(),
           renderLayout: payload.watermark.renderLayout,
+          podcastTwoSpeakerMode: payload.watermark.podcastTwoSpeakerMode,
           ...(payload.watermark.text || watermarkLogoStorageKey
             ? {
                 watermark: {
