@@ -35,7 +35,31 @@ type PrismaHighlightAuditClient = {
   highlightCandidateReview: HighlightCandidateReviewDelegate;
 };
 
-const auditPrisma = prisma as unknown as PrismaHighlightAuditClient;
+function hasIterativeAuditDelegates(client: unknown): client is PrismaHighlightAuditClient {
+  return Boolean(
+    (client as {
+      highlightSelectionRun?: { create?: unknown; update?: unknown };
+      highlightCandidateReview?: { createMany?: unknown };
+    }).highlightSelectionRun?.create &&
+      (client as {
+        highlightSelectionRun?: { create?: unknown; update?: unknown };
+        highlightCandidateReview?: { createMany?: unknown };
+      }).highlightSelectionRun?.update &&
+      (client as {
+        highlightSelectionRun?: { create?: unknown; update?: unknown };
+        highlightCandidateReview?: { createMany?: unknown };
+      }).highlightCandidateReview?.createMany
+  );
+}
+
+function getAuditPrismaOrThrow() {
+  if (!hasIterativeAuditDelegates(prisma)) {
+    throw new Error(
+      "Prisma client belum memuat delegate highlight_selection_runs/highlight_candidate_reviews. Jalankan `npm run prisma:generate` lalu restart dev server."
+    );
+  }
+  return prisma as unknown as PrismaHighlightAuditClient;
+}
 
 function parseIntFromEnv(name: string, fallback: number, min: number, max: number): number {
   const raw = process.env[name];
@@ -157,6 +181,7 @@ function strictPass(evaluation: HighlightCriticEvaluation, knobs: PipelineKnobs)
 export async function runIterativeHighlightPipeline(
   input: IterativePipelineInput
 ): Promise<IterativePipelineOutput> {
+  const auditPrisma = getAuditPrismaOrThrow();
   const startedAt = Date.now();
   const knobs = loadKnobs();
   const durationRule = `- Durasi target tiap clip ${Math.round(input.durationRangeMs.min / 1000)}-${Math.round(
@@ -294,7 +319,7 @@ export async function runIterativeHighlightPipeline(
     );
     criticModel = seedCritic.model;
 
-    const seedReviewRows = seedCritic.evaluations.map((evaluation) => ({
+    const seedReviewRows = seedCritic.evaluations.map((evaluation: HighlightCriticEvaluation) => ({
       runId: run.id,
       iteration: 0,
       action: "critic_seed",
@@ -382,7 +407,7 @@ export async function runIterativeHighlightPipeline(
       );
       criticModel = regenCritic.model;
 
-      const regenReviewRows = regenCritic.evaluations.map((evaluation) => ({
+      const regenReviewRows = regenCritic.evaluations.map((evaluation: HighlightCriticEvaluation) => ({
         runId: run.id,
         iteration,
         action: "critic_regen",

@@ -32,7 +32,7 @@ export default function RootLayout({
           rel="stylesheet"
         />
       </head>
-      <body className="min-h-full bg-surface text-on-surface antialiased overflow-hidden font-body">
+      <body className="min-h-full bg-surface text-on-surface antialiased overflow-x-hidden font-body">
         {children}
       </body>
     </html>
