@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 
 import ytdl from "@distube/ytdl-core";
@@ -12,6 +13,8 @@ import { getStorageRootDir } from "@/lib/storage";
 
 const logger = createLogger("lib/youtube");
 const execFileAsync = promisify(execFile);
+const YTDLP_NIGHTLY_URL =
+  "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp";
 
 type YtdlCookie = {
   name: string;
@@ -120,6 +123,28 @@ export function isBotCheckError(error: unknown): boolean {
   return lower.includes("sign in to confirm") || lower.includes("not a bot");
 }
 
+export function isForbiddenError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error || "");
+  const lower = message.toLowerCase();
+  return lower.includes("403") || lower.includes("forbidden");
+}
+
+export function parseBooleanFlag(value: string | undefined | null, defaultValue = false): boolean {
+  if (!value) {
+    return defaultValue;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+
+  return defaultValue;
+}
+
 function parsePositiveInt(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value || "", 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -137,6 +162,14 @@ export function getRetryDelayMs(baseDelayMs: number, attempt: number): number {
   return Math.min(10_000, baseDelayMs * 2 ** exponent);
 }
 
+export function getYtDlpRetryConfig() {
+  return {
+    infoMaxRetries: parsePositiveInt(process.env.YTDLP_INFO_MAX_RETRIES, 2),
+    downloadMaxRetries: parsePositiveInt(process.env.YTDLP_DOWNLOAD_MAX_RETRIES, 2),
+    baseDelayMs: parsePositiveInt(process.env.YTDLP_RETRY_BASE_MS, 1200),
+  };
+}
+
 function getPlayerClientsForAttempt(attempt: number): Array<
   "WEB" | "WEB_EMBEDDED" | "TV" | "IOS" | "ANDROID"
 > {
@@ -150,12 +183,241 @@ function getPlayerClientsForAttempt(attempt: number): Array<
 }
 
 export function shouldEnableYtDlpFallback(): boolean {
-  const value = (process.env.YOUTUBE_ENABLE_YTDLP_FALLBACK || "true").trim().toLowerCase();
-  return value !== "0" && value !== "false" && value !== "off";
+  return parseBooleanFlag(process.env.YOUTUBE_ENABLE_YTDLP_FALLBACK, true);
 }
 
 function getYtDlpBin(): string {
   return process.env.YTDLP_BIN?.trim() || "yt-dlp";
+}
+
+async function hasYtDlpOption(bin: string, optionName: string): Promise<boolean> {
+  try {
+    const { stdout } = await execFileAsync(bin, ["--help"], {
+      maxBuffer: 12 * 1024 * 1024,
+    });
+    return stdout.includes(optionName);
+  } catch (error) {
+    logger.warn("ytdlp_help_probe_failed", {
+      bin,
+      optionName,
+      message: error instanceof Error ? error.message : "unknown_error",
+    });
+    return false;
+  }
+}
+
+async function ensureYtDlpNightlyBin(): Promise<string> {
+  const targetPath = path.join(getStorageRootDir(), "bin", "yt-dlp-nightly");
+  const targetDir = path.dirname(targetPath);
+
+  try {
+    const existing = await stat(targetPath);
+    if (existing.isFile() && existing.size > 0) {
+      return targetPath;
+    }
+  } catch {
+    // file not found; continue to download
+  }
+
+  logger.info("ytdlp_nightly_download_started", { targetPath, url: YTDLP_NIGHTLY_URL });
+  const response = await fetch(YTDLP_NIGHTLY_URL, { method: "GET" });
+  if (!response.ok) {
+    throw new Error(`Gagal download yt-dlp nightly (${response.status})`);
+  }
+
+  const bytes = Buffer.from(await response.arrayBuffer());
+  await mkdir(targetDir, { recursive: true });
+  await writeFile(targetPath, bytes);
+  await chmod(targetPath, 0o755);
+
+  logger.info("ytdlp_nightly_download_completed", { targetPath, sizeBytes: bytes.length });
+  return targetPath;
+}
+
+async function resolveYtDlpBinForFallback(): Promise<string> {
+  const configured = process.env.YTDLP_BIN?.trim();
+  if (configured) {
+    return configured;
+  }
+
+  const systemBin = getYtDlpBin();
+  const forceNightly = parseBooleanFlag(process.env.YTDLP_FORCE_NIGHTLY, false);
+  const autoBootstrapNightly = parseBooleanFlag(process.env.YTDLP_AUTO_BOOTSTRAP_NIGHTLY, true);
+
+  if (forceNightly) {
+    try {
+      return await ensureYtDlpNightlyBin();
+    } catch (error) {
+      logger.warn("ytdlp_force_nightly_failed_fallback_system_bin", {
+        message: error instanceof Error ? error.message : "unknown_error",
+      });
+      return systemBin;
+    }
+  }
+
+  if (!autoBootstrapNightly) {
+    return systemBin;
+  }
+
+  const [supportsRemote, supportsJsRuntime] = await Promise.all([
+    hasYtDlpOption(systemBin, "--remote-components"),
+    hasYtDlpOption(systemBin, "--js-runtimes"),
+  ]);
+
+  if (supportsRemote && supportsJsRuntime) {
+    return systemBin;
+  }
+
+  try {
+    const nightly = await ensureYtDlpNightlyBin();
+    logger.info("ytdlp_auto_bootstrap_nightly_enabled", {
+      from: systemBin,
+      to: nightly,
+      supportsRemote,
+      supportsJsRuntime,
+    });
+    return nightly;
+  } catch (error) {
+    logger.warn("ytdlp_auto_bootstrap_failed_use_system_bin", {
+      message: error instanceof Error ? error.message : "unknown_error",
+      supportsRemote,
+      supportsJsRuntime,
+    });
+    return systemBin;
+  }
+}
+
+function getYtDlpJsRuntimeArgs(): string[] {
+  const enabled = parseBooleanFlag(process.env.YTDLP_JS_RUNTIME_ENABLED, true);
+  if (!enabled) {
+    return [];
+  }
+
+  const runtime = process.env.YTDLP_JS_RUNTIME?.trim() || "node";
+  return ["--js-runtimes", runtime];
+}
+
+export function getYtDlpRemoteComponentsArgs(): string[] {
+  const enabled = parseBooleanFlag(process.env.YTDLP_REMOTE_COMPONENTS_ENABLED, true);
+  if (!enabled) {
+    return [];
+  }
+
+  const source = process.env.YTDLP_REMOTE_COMPONENTS_SOURCE?.trim() || "ejs:github";
+  return ["--remote-components", source];
+}
+
+export function getYtDlpPlayerClientArg(playerClients: string): string {
+  return `youtube:player_client=${playerClients}`;
+}
+
+export function getYtDlpExtractorArgVariants(): string[] {
+  const fromEnv = (process.env.YTDLP_EXTRACTOR_ARG_VARIANTS || "")
+    .split("|")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+
+  const defaults = [
+    getYtDlpPlayerClientArg("android"),
+    getYtDlpPlayerClientArg("android,ios,tv,web"),
+    getYtDlpPlayerClientArg("tv,web_safari,android,ios"),
+    getYtDlpPlayerClientArg("default,-ios"),
+    getYtDlpPlayerClientArg("web_safari,android_vr,tv"),
+  ];
+
+  const merged = fromEnv.length > 0 ? [...fromEnv, ...defaults] : defaults;
+  return [...new Set(merged)];
+}
+
+function getYtDlpFormatFallbacks(): string[] {
+  const fromEnv = (process.env.YTDLP_FORMAT_FALLBACKS || "")
+    .split("|")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+
+  const defaults = ["bv+ba/b", "b/bv+ba", "b"];
+  const merged = fromEnv.length > 0 ? [...fromEnv, ...defaults] : defaults;
+  return [...new Set(merged)];
+}
+
+export function extractYoutubeVideoIdFromUrl(url: string): string | null {
+  try {
+    return ytdl.getURLVideoID(url);
+  } catch {
+    const patterns = [
+      /youtu\.be\/([a-zA-Z0-9_-]{11})/i,
+      /[?&]v=([a-zA-Z0-9_-]{11})/i,
+      /\/shorts\/([a-zA-Z0-9_-]{11})/i,
+      /\/embed\/([a-zA-Z0-9_-]{11})/i,
+    ];
+
+    for (const pattern of patterns) {
+      const match = url.match(pattern);
+      if (match?.[1]) {
+        return match[1];
+      }
+    }
+  }
+
+  return null;
+}
+
+export async function findDownloadedFileByCreatedAt(
+  rootDir: string,
+  createdAt: number,
+  preferredVideoId?: string | null
+): Promise<string | null> {
+  const youtubeDir = path.join(rootDir, "youtube");
+  const suffix = `-${createdAt}`;
+
+  let files: string[] = [];
+  try {
+    files = await readdir(youtubeDir);
+  } catch {
+    return null;
+  }
+
+  const matches = files
+    .filter((filename) => filename.includes(suffix))
+    .map((filename) => path.join(youtubeDir, filename));
+
+  if (matches.length === 0) {
+    return null;
+  }
+
+  const ranked = await Promise.all(
+    matches.map(async (candidatePath) => {
+      try {
+        const info = await stat(candidatePath);
+        return {
+          path: candidatePath,
+          mtimeMs: info.mtimeMs,
+          preferred:
+            Boolean(preferredVideoId) &&
+            path.basename(candidatePath).toLowerCase().startsWith(`${String(preferredVideoId).toLowerCase()}-`),
+        };
+      } catch {
+        return null;
+      }
+    })
+  );
+
+  const available = ranked.filter(
+    (item): item is { path: string; mtimeMs: number; preferred: boolean } => item !== null
+  );
+
+  if (available.length === 0) {
+    return null;
+  }
+
+  available.sort((a, b) => {
+    if (a.preferred !== b.preferred) {
+      return a.preferred ? -1 : 1;
+    }
+    return b.mtimeMs - a.mtimeMs;
+  });
+
+  return available[0].path;
 }
 
 function getYoutubeExternalDownloaderProxyArgs(): string[] {
@@ -232,58 +494,332 @@ async function hashFileSha256(filePath: string): Promise<{ sha256: string; sizeB
   };
 }
 
+function extractExecErrorText(error: unknown): string {
+  if (!error || typeof error !== "object") {
+    return String(error || "");
+  }
+
+  const err = error as {
+    message?: string;
+    stderr?: string | Buffer;
+    stdout?: string | Buffer;
+  };
+
+  const stderr =
+    typeof err.stderr === "string"
+      ? err.stderr
+      : Buffer.isBuffer(err.stderr)
+        ? err.stderr.toString("utf8")
+        : "";
+  const stdout =
+    typeof err.stdout === "string"
+      ? err.stdout
+      : Buffer.isBuffer(err.stdout)
+        ? err.stdout.toString("utf8")
+        : "";
+  const message = err.message || "";
+
+  return [message, stderr, stdout].filter((part) => part.trim().length > 0).join("\n");
+}
+
+function hasNoSuchOptionError(errorText: string, optionName: string): boolean {
+  const lower = errorText.toLowerCase();
+  return lower.includes("no such option") && lower.includes(optionName.toLowerCase());
+}
+
+function isYtDlpTransientError(errorText: string): boolean {
+  return (
+    isRateLimitedError(errorText) ||
+    isBotCheckError(errorText) ||
+    isForbiddenError(errorText) ||
+    errorText.toLowerCase().includes("http error 5")
+  );
+}
+
+function compactErrorText(errorText: string, maxLines = 8): string {
+  const lines = errorText
+    .trim()
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  const focused = lines.filter((line) =>
+    /error|warning|forbidden|too many requests|not a bot|precondition/i.test(line)
+  );
+  const source = focused.length > 0 ? focused : lines;
+  const compact = source.slice(-maxLines).join(" | ");
+
+  return compact || "unknown_error";
+}
+
+async function runYtDlpCommandWithRetry(
+  bin: string,
+  args: string[],
+  retries: number,
+  context: Record<string, unknown>
+): Promise<
+  | { ok: true; stdout: string }
+  | {
+      ok: false;
+      errorText: string;
+      unsupportedOption: "--remote-components" | "--js-runtimes" | null;
+    }
+> {
+  const maxRetries = Math.max(0, retries);
+  const retryBaseMs = getYtDlpRetryConfig().baseDelayMs;
+  let lastErrorText = "";
+
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    try {
+      const { stdout } = await execFileAsync(bin, args, { maxBuffer: 10 * 1024 * 1024 });
+      return { ok: true, stdout };
+    } catch (error) {
+      const errorText = extractExecErrorText(error);
+      lastErrorText = errorText;
+      const remoteOptionUnsupported = hasNoSuchOptionError(errorText, "--remote-components");
+      const jsRuntimeOptionUnsupported = hasNoSuchOptionError(errorText, "--js-runtimes");
+      const unsupportedOption = remoteOptionUnsupported
+        ? "--remote-components"
+        : jsRuntimeOptionUnsupported
+          ? "--js-runtimes"
+          : null;
+
+      logger.warn("ytdlp_command_failed", {
+        ...context,
+        attempt,
+        maxRetries,
+        unsupportedOption,
+        message: compactErrorText(errorText, 3),
+      });
+
+      if (unsupportedOption) {
+        return {
+          ok: false,
+          errorText,
+          unsupportedOption,
+        };
+      }
+
+      if (attempt >= maxRetries || !isYtDlpTransientError(errorText)) {
+        break;
+      }
+
+      const waitMs = getRetryDelayMs(retryBaseMs, attempt + 1);
+      await delay(waitMs);
+    }
+  }
+
+  return {
+    ok: false,
+    errorText: lastErrorText || "yt-dlp command failed",
+    unsupportedOption: null,
+  };
+}
+
 export async function downloadYoutubeVideoWithYtDlp(url: string) {
   const root = getStorageRootDir();
   const createdAt = Date.now();
   const outputTemplate = path.join(root, "youtube", `%(id)s-${createdAt}.%(ext)s`);
   await mkdir(path.dirname(outputTemplate), { recursive: true });
 
+  const ytDlpBin = await resolveYtDlpBinForFallback();
+  const retryConfig = getYtDlpRetryConfig();
+  const videoIdFromUrl = extractYoutubeVideoIdFromUrl(url);
+  const extractorArgVariants = getYtDlpExtractorArgVariants();
+  const formatFallbacks = getYtDlpFormatFallbacks();
   const cookieFilePath = await buildYtDlpCookieFilePath();
-  const commonArgs = [
+  const tryCookies = parseBooleanFlag(process.env.YTDLP_TRY_COOKIES, false);
+  const commonArgsBase = [
     "--no-playlist",
-    "--js-runtimes",
-    process.env.YTDLP_JS_RUNTIME?.trim() || "node",
     ...getYoutubeExternalDownloaderProxyArgs(),
-    ...(cookieFilePath ? ["--cookies", cookieFilePath] : []),
-    "--extractor-args",
-    "youtube:player_client=android,ios,tv,web",
   ];
+  const cookieArgsVariants: string[][] =
+    cookieFilePath && tryCookies ? [[], ["--cookies", cookieFilePath]] : [[]];
+  const jsRuntimeArgsEnabled = getYtDlpJsRuntimeArgs();
+  let jsRuntimeArgsVariants: string[][] = jsRuntimeArgsEnabled.length > 0 ? [jsRuntimeArgsEnabled, []] : [[]];
+  const remoteArgsEnabled = getYtDlpRemoteComponentsArgs();
+  let remoteArgsVariants: string[][] = remoteArgsEnabled.length > 0 ? [remoteArgsEnabled, []] : [[]];
+  let infoResult: YtDlpVideoInfo | null = null;
+  let lastInfoError = "";
 
   try {
-    const infoArgs = [...commonArgs, "--dump-single-json", url];
-    logger.info("ytdlp_info_started", { bin: getYtDlpBin(), args: infoArgs });
+    infoLoop: for (const cookieArgs of cookieArgsVariants) {
+      for (const jsRuntimeArgs of jsRuntimeArgsVariants) {
+        for (const remoteArgs of remoteArgsVariants) {
+          for (const extractorArg of extractorArgVariants) {
+            const infoArgs = [
+              ...commonArgsBase,
+              ...cookieArgs,
+              ...jsRuntimeArgs,
+              ...remoteArgs,
+              "--extractor-args",
+              extractorArg,
+              "--dump-single-json",
+              url,
+            ];
 
-    let parsedInfo: YtDlpVideoInfo;
-    try {
-      const { stdout } = await execFileAsync(getYtDlpBin(), infoArgs, { maxBuffer: 10 * 1024 * 1024 });
-      parsedInfo = JSON.parse(stdout.trim()) as YtDlpVideoInfo;
-    } catch (error) {
-      logger.error("ytdlp_info_failed", {
-        message: error instanceof Error ? error.message : "Unknown error",
+            logger.info("ytdlp_info_started", {
+              bin: ytDlpBin,
+              cookieMode: cookieArgs.length > 0 ? "with_cookie" : "no_cookie",
+              jsRuntime: jsRuntimeArgs.length > 0 ? jsRuntimeArgs[1] : null,
+              remoteComponents: remoteArgs.length > 0 ? remoteArgs[1] : null,
+              extractorArg,
+            });
+
+            const infoExec = await runYtDlpCommandWithRetry(
+              ytDlpBin,
+              infoArgs,
+              retryConfig.infoMaxRetries,
+              {
+                stage: "info",
+                cookieMode: cookieArgs.length > 0 ? "with_cookie" : "no_cookie",
+                extractorArg,
+                jsRuntimeEnabled: jsRuntimeArgs.length > 0,
+                remoteComponentsEnabled: remoteArgs.length > 0,
+              }
+            );
+
+            if (!infoExec.ok) {
+              lastInfoError = infoExec.errorText;
+
+              if (infoExec.unsupportedOption === "--js-runtimes" && jsRuntimeArgs.length > 0) {
+                jsRuntimeArgsVariants = [[]];
+                logger.warn("ytdlp_js_runtime_option_unsupported", {
+                  fallback: "retry_without_js_runtimes_arg",
+                });
+                continue infoLoop;
+              }
+
+              if (infoExec.unsupportedOption === "--remote-components" && remoteArgs.length > 0) {
+                remoteArgsVariants = [[]];
+                logger.warn("ytdlp_remote_components_unsupported", {
+                  fallback: "retry_without_remote_components",
+                });
+                continue;
+              }
+              continue;
+            }
+
+            try {
+              infoResult = JSON.parse(infoExec.stdout.trim()) as YtDlpVideoInfo;
+              logger.info("ytdlp_info_completed", {
+                videoId: infoResult.id || null,
+                title: infoResult.title || null,
+                extractorArg,
+              });
+              break infoLoop;
+            } catch (error) {
+              lastInfoError = error instanceof Error ? error.message : "Gagal parse output yt-dlp --dump-single-json";
+              logger.warn("ytdlp_info_parse_failed", { extractorArg, message: lastInfoError });
+            }
+          }
+        }
+      }
+    }
+
+    if (!infoResult && lastInfoError) {
+      logger.warn("ytdlp_info_unavailable_continue_download", {
+        message: compactErrorText(lastInfoError, 3),
       });
+    }
+
+    let downloadSucceeded = false;
+    let lastDownloadError = "";
+
+    downloadLoop: for (const cookieArgs of cookieArgsVariants) {
+      for (const jsRuntimeArgs of jsRuntimeArgsVariants) {
+        for (const remoteArgs of remoteArgsVariants) {
+          for (const extractorArg of extractorArgVariants) {
+            for (const format of formatFallbacks) {
+              const downloadArgs = [
+                ...commonArgsBase,
+                ...cookieArgs,
+                ...jsRuntimeArgs,
+                ...remoteArgs,
+                "--extractor-args",
+                extractorArg,
+                "-f",
+                format,
+                "--merge-output-format",
+                "mp4",
+                "-o",
+                outputTemplate,
+                url,
+              ];
+
+              logger.info("ytdlp_download_started", {
+                bin: ytDlpBin,
+                outputTemplate,
+                format,
+                cookieMode: cookieArgs.length > 0 ? "with_cookie" : "no_cookie",
+                extractorArg,
+                jsRuntime: jsRuntimeArgs.length > 0 ? jsRuntimeArgs[1] : null,
+                remoteComponents: remoteArgs.length > 0 ? remoteArgs[1] : null,
+              });
+
+              const downloadExec = await runYtDlpCommandWithRetry(
+                ytDlpBin,
+                downloadArgs,
+                retryConfig.downloadMaxRetries,
+                {
+                  stage: "download",
+                  cookieMode: cookieArgs.length > 0 ? "with_cookie" : "no_cookie",
+                  format,
+                  extractorArg,
+                  jsRuntimeEnabled: jsRuntimeArgs.length > 0,
+                  remoteComponentsEnabled: remoteArgs.length > 0,
+                }
+              );
+
+              if (!downloadExec.ok) {
+                lastDownloadError = downloadExec.errorText;
+
+                if (downloadExec.unsupportedOption === "--js-runtimes" && jsRuntimeArgs.length > 0) {
+                  jsRuntimeArgsVariants = [[]];
+                  logger.warn("ytdlp_js_runtime_option_unsupported", {
+                    fallback: "retry_without_js_runtimes_arg",
+                  });
+                  continue downloadLoop;
+                }
+
+                if (downloadExec.unsupportedOption === "--remote-components" && remoteArgs.length > 0) {
+                  remoteArgsVariants = [[]];
+                  logger.warn("ytdlp_remote_components_unsupported", {
+                    fallback: "retry_without_remote_components",
+                  });
+                  continue;
+                }
+                continue;
+              }
+
+              downloadSucceeded = true;
+              break downloadLoop;
+            }
+          }
+        }
+      }
+    }
+
+    if (!downloadSucceeded) {
       throw new Error(
-        "Fallback yt-dlp gagal mengambil info video. Pastikan yt-dlp terpasang, cookie valid, atau set YTDLP_BIN yang benar."
+        `Fallback yt-dlp gagal mengunduh video. ${
+          compactErrorText(lastDownloadError || lastInfoError || "Tidak ada kombinasi extractor/format yang berhasil.")
+        }`
       );
     }
 
-    const downloadArgs = [...commonArgs, "-f", "bv*+ba/b", "--merge-output-format", "mp4", "-o", outputTemplate, url];
-
-    logger.info("ytdlp_download_started", { bin: getYtDlpBin(), outputTemplate });
-
-    try {
-      await execFileAsync(getYtDlpBin(), downloadArgs, { maxBuffer: 10 * 1024 * 1024 });
-    } catch (error) {
-      logger.error("ytdlp_download_failed", {
-        message: error instanceof Error ? error.message : "Unknown error",
-      });
-      throw new Error("Fallback yt-dlp gagal mengunduh video.");
+    const outputPath = await findDownloadedFileByCreatedAt(root, createdAt, infoResult?.id || videoIdFromUrl);
+    if (!outputPath) {
+      throw new Error("Fallback yt-dlp selesai dijalankan, tapi file output tidak ditemukan.");
     }
 
-    const videoId = parsedInfo.id?.trim() || "unknown";
-    const preferredExt = "mp4";
-    const outputFileName = `${videoId}-${createdAt}.${preferredExt}`;
-    const outputPath = path.join(root, "youtube", outputFileName);
-    const storageKey = `youtube/${outputFileName}`;
+    const storageKey = path.relative(root, outputPath).replace(/\\/g, "/");
+    const ext = path.extname(outputPath).replace(".", "").toLowerCase();
+    const outputFileName = path.basename(outputPath);
+    const markerIndex = outputFileName.indexOf(`-${createdAt}`);
+    const fallbackVideoIdFromFilename = markerIndex > 0 ? outputFileName.slice(0, markerIndex) : null;
+    const videoId =
+      infoResult?.id?.trim() || videoIdFromUrl || fallbackVideoIdFromFilename || `unknown-${createdAt}`;
 
     const { sha256, sizeBytes } = await hashFileSha256(outputPath);
 
@@ -298,19 +834,19 @@ export async function downloadYoutubeVideoWithYtDlp(url: string) {
       storageKey,
       sha256,
       downloadedBytes: sizeBytes,
-      durationMs: Math.max(1, Math.floor((parsedInfo.duration || 0) * 1000)),
+      durationMs: Math.max(1, Math.floor((infoResult?.duration || 0) * 1000)),
       videoId,
-      title: parsedInfo.title || videoId,
-      channelName: parsedInfo.channel || parsedInfo.uploader || null,
-      fps: typeof parsedInfo.fps === "number" ? parsedInfo.fps : null,
-      width: typeof parsedInfo.width === "number" ? parsedInfo.width : null,
-      height: typeof parsedInfo.height === "number" ? parsedInfo.height : null,
-      mimeType: parsedInfo.ext ? `video/${parsedInfo.ext}` : null,
-      bitrateKbps: typeof parsedInfo.tbr === "number" ? Math.round(parsedInfo.tbr) : null,
-      sampleRate: typeof parsedInfo.asr === "number" ? Math.round(parsedInfo.asr) : null,
-      channels: typeof parsedInfo.audio_channels === "number" ? parsedInfo.audio_channels : null,
-      videoCodec: parsedInfo.vcodec || null,
-      audioCodec: parsedInfo.acodec || null,
+      title: infoResult?.title || videoId,
+      channelName: infoResult?.channel || infoResult?.uploader || null,
+      fps: typeof infoResult?.fps === "number" ? infoResult.fps : null,
+      width: typeof infoResult?.width === "number" ? infoResult.width : null,
+      height: typeof infoResult?.height === "number" ? infoResult.height : null,
+      mimeType: ext ? `video/${ext}` : null,
+      bitrateKbps: typeof infoResult?.tbr === "number" ? Math.round(infoResult.tbr) : null,
+      sampleRate: typeof infoResult?.asr === "number" ? Math.round(infoResult.asr) : null,
+      channels: typeof infoResult?.audio_channels === "number" ? infoResult.audio_channels : null,
+      videoCodec: infoResult?.vcodec || null,
+      audioCodec: infoResult?.acodec || null,
     };
   } finally {
     if (cookieFilePath) {
@@ -465,13 +1001,13 @@ export function toFriendlyYoutubeError(error: unknown): Error {
     lower.includes("sign in to confirm you're not a bot")
   ) {
     return new Error(
-      "YouTube memblokir request (bot check). Sistem sudah mencoba mode no-cookie terlebih dulu. Jika masih gagal, gunakan YOUTUBE_COOKIES_* atau YOUTUBE_PROXY_URL lalu restart server."
+      "YouTube memblokir request (bot check). Sistem sudah mencoba beberapa strategi fallback (yt-dlp + multi extractor/format). Jika masih gagal, update yt-dlp ke nightly, aktifkan runtime JS/EJS, atau gunakan IP berbeda."
     );
   }
 
-  if (lower.includes("429")) {
+  if (lower.includes("429") || lower.includes("too many requests")) {
     return new Error(
-      "YouTube rate limit (429). Coba lagi beberapa saat atau gunakan YOUTUBE_COOKIES_JSON/proxy."
+      "YouTube rate limit (429). Coba lagi beberapa saat, kurangi frekuensi request, atau ganti IP."
     );
   }
 

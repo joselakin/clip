@@ -16,6 +16,7 @@ import {
   getRetryDelayMs,
   getYoutubeRetryConfig,
   isBotCheckError,
+  isForbiddenError,
   isRateLimitedError,
   pickBestCombinedFormat,
   shouldEnableYtDlpFallback,
@@ -80,7 +81,9 @@ export async function downloadYoutubeVideoToLocal(url: string) {
           message: error instanceof Error ? error.message : "Unknown error",
         });
 
-        const canRetry = isRateLimitedError(error) && attempt < retryConfig.maxRetries;
+        const canRetry =
+          (isRateLimitedError(error) || isForbiddenError(error) || isBotCheckError(error)) &&
+          attempt < retryConfig.maxRetries;
         if (canRetry) {
           const waitMs = getRetryDelayMs(retryConfig.baseDelayMs, attempt + 1);
           logger.warn("youtube_get_info_retry_wait", { mode: mode.label, waitMs });
@@ -89,7 +92,7 @@ export async function downloadYoutubeVideoToLocal(url: string) {
         }
 
         const shouldTryNextMode = mode.label === "no_cookie" && hasCookieConfig;
-        if (shouldTryNextMode && (isBotCheckError(error) || isRateLimitedError(error))) {
+        if (shouldTryNextMode && (isBotCheckError(error) || isRateLimitedError(error) || isForbiddenError(error))) {
           logger.warn("youtube_get_info_switching_mode", {
             from: mode.label,
             to: "with_cookie",
@@ -103,7 +106,11 @@ export async function downloadYoutubeVideoToLocal(url: string) {
   }
 
   if (!info) {
-    if (lastError && shouldEnableYtDlpFallback() && (isRateLimitedError(lastError) || isBotCheckError(lastError))) {
+    if (
+      lastError &&
+      shouldEnableYtDlpFallback() &&
+      (isRateLimitedError(lastError) || isBotCheckError(lastError) || isForbiddenError(lastError))
+    ) {
       logger.warn("youtube_fallback_to_ytdlp", {
         reason: lastError instanceof Error ? lastError.message : "Unknown error",
       });
