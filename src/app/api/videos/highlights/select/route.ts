@@ -12,7 +12,10 @@ import {
 import { decryptSecret } from "@/lib/crypto";
 import { evaluateClipRecommendationsWithGroq, selectHighlightsWithGroq } from "@/lib/groq";
 import { runIterativeHighlightPipeline } from "@/lib/highlight-pipeline";
+import { findRunningJobForStep } from "@/lib/job-dedupe";
 import { createLogger } from "@/lib/logger";
+import { publishPipelineStatusUpdate } from "@/lib/pipeline-events";
+import { getPipelineStatusByVideoId } from "@/lib/pipeline-status";
 import { prisma } from "@/lib/prisma";
 
 export const runtime = "nodejs";
@@ -220,6 +223,20 @@ export async function POST(request: NextRequest) {
   let jobId = "";
 
   try {
+    const existingJob = await findRunningJobForStep(prisma, {
+      videoId,
+      jobType: "HIGHLIGHT",
+    });
+    if (existingJob) {
+      logger.info("job_deduplicated", { videoId, existingJobId: existingJob.id, jobType: "HIGHLIGHT" });
+      return NextResponse.json({
+        ok: true,
+        deduplicated: true,
+        jobId: existingJob.id,
+        message: "Highlight selection sedang berjalan",
+      });
+    }
+
     logger.info("job_creating", { videoId, transcriptCount: transcriptSegments.length });
     const job = await prisma.job.create({
       data: {
@@ -542,6 +559,20 @@ export async function POST(request: NextRequest) {
       clipCountTarget,
     });
 
+    void publishPipelineStatusUpdate({
+      videoId,
+      getPipelineStatus: () => getPipelineStatusByVideoId(prisma, videoId),
+    }).catch((publishError) => {
+      logger.warn("highlight_pipeline_success_status_publish_failed", {
+        videoId,
+        jobId,
+        message:
+          publishError instanceof Error
+            ? publishError.message
+            : "Failed to publish highlight success status",
+      });
+    });
+
     return NextResponse.json({
       ok: true,
       message: "Highlight selection selesai",
@@ -567,6 +598,20 @@ export async function POST(request: NextRequest) {
             errorMessage: error instanceof Error ? error.message : "Highlight selection gagal",
             lastError: error instanceof Error ? error.message : "Highlight selection gagal",
           },
+        });
+
+        void publishPipelineStatusUpdate({
+          videoId,
+          getPipelineStatus: () => getPipelineStatusByVideoId(prisma, videoId),
+        }).catch((publishError) => {
+          logger.warn("highlight_pipeline_failed_status_publish_failed", {
+            videoId,
+            jobId,
+            message:
+              publishError instanceof Error
+                ? publishError.message
+                : "Failed to publish highlight failed status",
+          });
         });
       } catch (jobUpdateError) {
         logger.error("highlight_pipeline_failed_job_update_failed", {

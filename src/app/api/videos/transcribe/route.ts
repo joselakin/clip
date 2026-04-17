@@ -7,8 +7,11 @@ import type { GroqSegment, GroqTranscriptionResponse, GroqWord } from "@/lib/gro
 import { isValidSessionToken, SESSION_COOKIE_NAME } from "@/lib/auth";
 import { decryptSecret } from "@/lib/crypto";
 import { transcribeAudioWithGroq } from "@/lib/groq";
+import { findRunningJobForStep } from "@/lib/job-dedupe";
 import { createLogger } from "@/lib/logger";
 import { extractAudioForTranscription, splitAudioForTranscription } from "@/lib/media";
+import { publishPipelineStatusUpdate } from "@/lib/pipeline-events";
+import { getPipelineStatusByVideoId } from "@/lib/pipeline-status";
 import { prisma } from "@/lib/prisma";
 import { buildAudioStorageKey, getStorageRootDir, resolveStoragePath } from "@/lib/storage";
 
@@ -103,6 +106,20 @@ export async function POST(request: NextRequest) {
   let jobId = "";
 
   try {
+    const existingJob = await findRunningJobForStep(prisma, {
+      videoId,
+      jobType: "TRANSCRIBE",
+    });
+    if (existingJob) {
+      logger.info("job_deduplicated", { videoId, existingJobId: existingJob.id, jobType: "TRANSCRIBE" });
+      return NextResponse.json({
+        ok: true,
+        deduplicated: true,
+        jobId: existingJob.id,
+        message: "Transkripsi sedang berjalan",
+      });
+    }
+
     logger.info("job_creating", { videoId, ownerRef });
     const job = await prisma.job.create({
       data: {
@@ -322,6 +339,20 @@ export async function POST(request: NextRequest) {
       model,
     });
 
+    void publishPipelineStatusUpdate({
+      videoId,
+      getPipelineStatus: () => getPipelineStatusByVideoId(prisma, videoId),
+    }).catch((publishError) => {
+      logger.warn("transcription_pipeline_success_status_publish_failed", {
+        videoId,
+        jobId,
+        message:
+          publishError instanceof Error
+            ? publishError.message
+            : "Failed to publish transcribe success status",
+      });
+    });
+
     return NextResponse.json({
       ok: true,
       message: "Transkripsi selesai",
@@ -346,6 +377,20 @@ export async function POST(request: NextRequest) {
           errorMessage: error instanceof Error ? error.message : "Transkripsi gagal",
           lastError: error instanceof Error ? error.message : "Transkripsi gagal",
         },
+      });
+
+      void publishPipelineStatusUpdate({
+        videoId,
+        getPipelineStatus: () => getPipelineStatusByVideoId(prisma, videoId),
+      }).catch((publishError) => {
+        logger.warn("transcription_pipeline_failed_status_publish_failed", {
+          videoId,
+          jobId,
+          message:
+            publishError instanceof Error
+              ? publishError.message
+              : "Failed to publish transcribe failed status",
+        });
       });
     }
 

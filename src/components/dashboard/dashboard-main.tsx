@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { HeroSection } from "@/components/dashboard/hero-section";
 import { ProduceClipsCta } from "@/components/dashboard/produce-clips-cta";
@@ -47,7 +47,20 @@ type PipelineStep = {
   detail: string;
 };
 
+type PipelineSnapshot = {
+  overall: "idle" | "running" | "success" | "failed";
+  steps: Array<{ id: PipelineStepId; status: PipelineStepStatus; detail: string }>;
+  updatedAtIso: string;
+};
+
+type PipelineStatusResult = {
+  ok: boolean;
+  videoId: string;
+  pipeline: PipelineSnapshot;
+};
+
 const DEFAULT_PIPELINE_STEPS: PipelineStep[] = [
+
   { id: "download", label: "Ingest Video", status: "pending", detail: "Menunggu proses" },
   { id: "transcribe", label: "Transcribe", status: "pending", detail: "Menunggu proses" },
   { id: "highlight", label: "AI Highlights", status: "pending", detail: "Menunggu proses" },
@@ -106,6 +119,236 @@ export function DashboardMain() {
   const [highlightLines, setHighlightLines] = useState<HighlightLine[]>([]);
   const [renderedClips, setRenderedClips] = useState<RenderedClipLine[]>([]);
   const [pipelineSteps, setPipelineSteps] = useState<PipelineStep[]>(DEFAULT_PIPELINE_STEPS);
+  const [activeVideoId, setActiveVideoId] = useState<string | null>(null);
+  const sseRef = useRef<EventSource | null>(null);
+  const pollingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pollingFailuresRef = useRef(0);
+  const resubscribeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const resubscribeActionRef = useRef<(videoId: string) => void>(() => undefined);
+  const latestOverallRef = useRef<PipelineSnapshot["overall"]>("idle");
+  const [isConnectionDegraded, setIsConnectionDegraded] = useState(false);
+  const [connectionMode, setConnectionMode] = useState<"sse" | "polling">("sse");
+
+  const applyPipelineSnapshot = useCallback((snapshot: PipelineSnapshot) => {
+    latestOverallRef.current = snapshot.overall;
+    if (snapshot.overall === "success" || snapshot.overall === "failed") {
+      setConnectionMode("sse");
+      setIsConnectionDegraded(false);
+      pollingFailuresRef.current = 0;
+    }
+    setPipelineSteps((prev) =>
+      prev.map((step) => {
+        const incoming = snapshot.steps.find((incomingStep) => incomingStep.id === step.id);
+        if (!incoming) {
+          return step;
+        }
+        return {
+          ...step,
+          status: incoming.status,
+          detail: incoming.detail,
+        };
+      })
+    );
+  }, []);
+
+  const stopPolling = useCallback(() => {
+    if (!pollingTimerRef.current) {
+      return;
+    }
+    clearTimeout(pollingTimerRef.current);
+    pollingTimerRef.current = null;
+  }, []);
+
+  const stopResubscribe = useCallback(() => {
+    if (!resubscribeTimerRef.current) {
+      return;
+    }
+    clearTimeout(resubscribeTimerRef.current);
+    resubscribeTimerRef.current = null;
+  }, []);
+
+  const stopSse = useCallback(() => {
+    if (!sseRef.current) {
+      return;
+    }
+    sseRef.current.close();
+    sseRef.current = null;
+  }, []);
+
+  const fetchPipelineSnapshot = useCallback(async (videoId: string) => {
+    const response = await fetch(`/api/videos/status?videoId=${encodeURIComponent(videoId)}`, {
+      method: "GET",
+      cache: "no-store",
+    });
+
+    const result = (await response.json()) as
+      | (PipelineStatusResult & { message?: string })
+      | { ok: false; message?: string };
+
+    if (!response.ok || !result.ok || !("pipeline" in result)) {
+      throw new Error(("message" in result && result.message) || "Gagal memuat status pipeline");
+    }
+
+    applyPipelineSnapshot(result.pipeline);
+    return result;
+  }, [applyPipelineSnapshot]);
+
+  const scheduleResubscribe = useCallback(
+    (videoId: string, delayMs: number) => {
+      if (latestOverallRef.current === "success" || latestOverallRef.current === "failed") {
+        return;
+      }
+      stopResubscribe();
+      resubscribeTimerRef.current = setTimeout(() => {
+        resubscribeTimerRef.current = null;
+        resubscribeActionRef.current(videoId);
+      }, delayMs);
+    },
+    [stopResubscribe]
+  );
+
+  const pollPipelineWithBackoff = useCallback(
+    async (videoId: string, delayMs = 3000) => {
+      stopPolling();
+      if (latestOverallRef.current === "success" || latestOverallRef.current === "failed") {
+        return;
+      }
+      pollingTimerRef.current = setTimeout(async () => {
+        pollingTimerRef.current = null;
+        try {
+          const status = await fetchPipelineSnapshot(videoId);
+          pollingFailuresRef.current = 0;
+          setIsConnectionDegraded(false);
+          if (status.pipeline.overall === "success" || status.pipeline.overall === "failed") {
+            stopPolling();
+            stopResubscribe();
+            return;
+          }
+          await pollPipelineWithBackoff(videoId, 3000);
+        } catch {
+          const failures = pollingFailuresRef.current + 1;
+          pollingFailuresRef.current = failures;
+          if (failures >= 3) {
+            setIsConnectionDegraded(true);
+          }
+          const nextDelay = Math.min(15000, 3000 * 2 ** Math.min(failures, 3));
+          await pollPipelineWithBackoff(videoId, nextDelay);
+        }
+      }, delayMs);
+    },
+    [fetchPipelineSnapshot, stopPolling, stopResubscribe]
+  );
+
+  const enterPollingFallback = useCallback(
+    (videoId: string) => {
+      stopSse();
+      setConnectionMode("polling");
+      void pollPipelineWithBackoff(videoId, 0);
+      scheduleResubscribe(videoId, 12000);
+    },
+    [pollPipelineWithBackoff, scheduleResubscribe, stopSse]
+  );
+
+  const subscribePipelineStream = useCallback(
+    (videoId: string) => {
+      if (latestOverallRef.current === "success" || latestOverallRef.current === "failed") {
+        stopSse();
+        stopPolling();
+        stopResubscribe();
+        return;
+      }
+      stopSse();
+
+      const stream = new EventSource(`/api/videos/status/stream?videoId=${encodeURIComponent(videoId)}`);
+      sseRef.current = stream;
+      setConnectionMode("sse");
+      setIsConnectionDegraded(false);
+      pollingFailuresRef.current = 0;
+      stopPolling();
+
+      const onStatusPayload = (payload: unknown) => {
+        if (!payload || typeof payload !== "object" || !("pipeline" in payload)) {
+          return;
+        }
+        const pipeline = (payload as { pipeline?: PipelineSnapshot }).pipeline;
+        if (!pipeline) {
+          return;
+        }
+        applyPipelineSnapshot(pipeline);
+        if (pipeline.overall === "success" || pipeline.overall === "failed") {
+          stopPolling();
+          stopSse();
+          stopResubscribe();
+        }
+      };
+
+      stream.addEventListener("snapshot", (event) => {
+        try {
+          const payload = JSON.parse((event as MessageEvent<string>).data) as unknown;
+          onStatusPayload(payload);
+        } catch {
+          enterPollingFallback(videoId);
+        }
+      });
+
+      stream.addEventListener("status_update", (event) => {
+        try {
+          const payload = JSON.parse((event as MessageEvent<string>).data) as unknown;
+          onStatusPayload(payload);
+        } catch {
+          enterPollingFallback(videoId);
+        }
+      });
+
+      stream.onerror = () => {
+        enterPollingFallback(videoId);
+      };
+    },
+    [applyPipelineSnapshot, enterPollingFallback, stopPolling, stopResubscribe, stopSse]
+  );
+
+  useEffect(() => {
+    resubscribeActionRef.current = (videoId: string) => {
+      subscribePipelineStream(videoId);
+    };
+  }, [subscribePipelineStream]);
+
+  useEffect(() => {
+    if (!activeVideoId) {
+      latestOverallRef.current = "idle";
+      setConnectionMode("sse");
+      setIsConnectionDegraded(false);
+      pollingFailuresRef.current = 0;
+      stopSse();
+      stopPolling();
+      stopResubscribe();
+      return;
+    }
+
+    latestOverallRef.current = "running";
+    setConnectionMode("sse");
+    setIsConnectionDegraded(false);
+    pollingFailuresRef.current = 0;
+
+    void fetchPipelineSnapshot(activeVideoId)
+      .then((status) => {
+        if (status.pipeline.overall === "success" || status.pipeline.overall === "failed") {
+          stopPolling();
+          stopResubscribe();
+          return;
+        }
+        subscribePipelineStream(activeVideoId);
+      })
+      .catch(() => {
+        enterPollingFallback(activeVideoId);
+      });
+
+    return () => {
+      stopSse();
+      stopPolling();
+      stopResubscribe();
+    };
+  }, [activeVideoId, enterPollingFallback, fetchPipelineSnapshot, stopPolling, stopResubscribe, stopSse, subscribePipelineStream]);
 
   function markStep(id: PipelineStepId, status: PipelineStepStatus, detail: string) {
     setPipelineSteps((prev) =>
@@ -137,6 +380,7 @@ export function DashboardMain() {
     setHighlightLines([]);
     setRenderedClips([]);
     setPipelineSteps(DEFAULT_PIPELINE_STEPS);
+    setActiveVideoId(null);
 
     let activeStep: PipelineStepId = "download";
 
@@ -212,6 +456,9 @@ export function DashboardMain() {
       );
 
       const importedVideoId = result.video?.id;
+      if (importedVideoId) {
+        setActiveVideoId(importedVideoId);
+      }
       if (!importedVideoId) {
         markStep("download", "error", "videoId tidak ditemukan setelah download.");
         setIsError(true);
@@ -231,6 +478,8 @@ export function DashboardMain() {
 
       const transcribeResult = (await transcribeResponse.json()) as {
         ok: boolean;
+        deduplicated?: boolean;
+        jobId?: string;
         message?: string;
         transcript?: {
           segmentsCount?: number;
@@ -243,6 +492,16 @@ export function DashboardMain() {
         markStep("transcribe", "error", transcribeResult.message ?? "Transkripsi gagal.");
         setIsError(true);
         setMessage(transcribeResult.message ?? "Video terunduh, tapi transkripsi gagal.");
+        return;
+      }
+
+      if (transcribeResult.deduplicated) {
+        markStep("transcribe", "running", "Transkripsi sedang berjalan di sesi/device lain...");
+        setIsError(false);
+        setMessage(
+          transcribeResult.message ??
+            "Transkripsi sudah berjalan di sesi lain. Menunggu update sinkron dari server..."
+        );
         return;
       }
 
@@ -270,6 +529,8 @@ export function DashboardMain() {
 
       const highlightResult = (await highlightResponse.json()) as {
         ok: boolean;
+        deduplicated?: boolean;
+        jobId?: string;
         message?: string;
         highlights?: {
           model?: string;
@@ -291,6 +552,16 @@ export function DashboardMain() {
         return;
       }
 
+      if (highlightResult.deduplicated) {
+        markStep("highlight", "running", "Seleksi highlight sedang berjalan di sesi/device lain...");
+        setIsError(false);
+        setMessage(
+          highlightResult.message ??
+            "Seleksi highlight sudah berjalan di sesi lain. Menunggu update sinkron dari server..."
+        );
+        return;
+      }
+
       markStep(
         "highlight",
         "done",
@@ -309,6 +580,8 @@ export function DashboardMain() {
 
       const renderResult = (await renderResponse.json()) as {
         ok: boolean;
+        deduplicated?: boolean;
+        jobId?: string;
         message?: string;
         render?: {
           faceFound?: boolean;
@@ -330,6 +603,16 @@ export function DashboardMain() {
             reason: candidate.reason,
             topic: candidate.topic,
           }))
+        );
+        return;
+      }
+
+      if (renderResult.deduplicated) {
+        markStep("render", "running", "Render clips sedang berjalan di sesi/device lain...");
+        setIsError(false);
+        setMessage(
+          renderResult.message ??
+            "Render clips sudah berjalan di sesi lain. Menunggu update sinkron dari server..."
         );
         return;
       }
@@ -419,6 +702,15 @@ export function DashboardMain() {
         <ProduceClipsCta onClick={handleProduce} disabled={processing} isProcessing={processing} />
         {message && (
           <p className={`text-center text-sm ${isError ? "text-white/70" : "text-white/85"}`}>{message}</p>
+        )}
+        {(showPipelineProgress || isConnectionDegraded) && (
+          <p className="text-center text-xs text-white/60">
+            {isConnectionDegraded
+              ? "Koneksi realtime tidak stabil, sinkronisasi status beralih ke polling sementara."
+              : connectionMode === "sse"
+                ? "Sinkronisasi status realtime aktif."
+                : "Sinkronisasi status via polling."}
+          </p>
         )}
       </div>
 

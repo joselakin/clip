@@ -9,6 +9,7 @@ import { isValidSessionToken, SESSION_COOKIE_NAME } from "@/lib/auth";
 import { decryptSecret } from "@/lib/crypto";
 import { computeFaceCropPlan } from "@/lib/face-crop";
 import { labelTwoSpeakerSegmentsWithGroq } from "@/lib/groq";
+import { findRunningJobForStep } from "@/lib/job-dedupe";
 import { createLogger } from "@/lib/logger";
 import {
   cropVideoToPortrait,
@@ -18,6 +19,8 @@ import {
   type PodcastSwitchSegment,
 } from "@/lib/media";
 import { prisma } from "@/lib/prisma";
+import { publishPipelineStatusUpdate } from "@/lib/pipeline-events";
+import { getPipelineStatusByVideoId } from "@/lib/pipeline-status";
 import {
   buildClipStorageKey,
   buildPortraitStorageKey,
@@ -301,6 +304,20 @@ export async function POST(request: NextRequest) {
   let jobId = "";
 
   try {
+    const existingJob = await findRunningJobForStep(prisma, {
+      videoId,
+      jobType: "RENDER_CLIP",
+    });
+    if (existingJob) {
+      logger.info("job_deduplicated", { videoId, existingJobId: existingJob.id, jobType: "RENDER_CLIP" });
+      return NextResponse.json({
+        ok: true,
+        deduplicated: true,
+        jobId: existingJob.id,
+        message: "Render clips sedang berjalan",
+      });
+    }
+
     logger.info("job_creating", { videoId, highlightCount: highlights.length });
     const job = await prisma.job.create({
       data: {
@@ -684,6 +701,20 @@ export async function POST(request: NextRequest) {
       renderLayout,
     });
 
+    void publishPipelineStatusUpdate({
+      videoId,
+      getPipelineStatus: () => getPipelineStatusByVideoId(prisma, videoId),
+    }).catch((publishError) => {
+      logger.warn("render_pipeline_success_status_publish_failed", {
+        videoId,
+        jobId,
+        message:
+          publishError instanceof Error
+            ? publishError.message
+            : "Failed to publish render success status",
+      });
+    });
+
     return NextResponse.json({
       ok: true,
       message: "Crop portrait dan render clips selesai",
@@ -705,6 +736,20 @@ export async function POST(request: NextRequest) {
           errorMessage: error instanceof Error ? error.message : "Render clips gagal",
           lastError: error instanceof Error ? error.message : "Render clips gagal",
         },
+      });
+
+      void publishPipelineStatusUpdate({
+        videoId,
+        getPipelineStatus: () => getPipelineStatusByVideoId(prisma, videoId),
+      }).catch((publishError) => {
+        logger.warn("render_pipeline_failed_status_publish_failed", {
+          videoId,
+          jobId,
+          message:
+            publishError instanceof Error
+              ? publishError.message
+              : "Failed to publish render failed status",
+        });
       });
     }
 
