@@ -59,6 +59,12 @@ export function supportsStrictStructuredOutputs(model: string): boolean {
   return normalized.includes("gpt-oss");
 }
 
+function repairJsonLikeObject(raw: string): string {
+  return raw
+    .replace(/([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*:)/g, '$1"$2"$3')
+    .replace(/,\s*([}\]])/g, "$1");
+}
+
 export function parseGroqContentAsJson<T>(rawContent: string): T {
   const trimmed = rawContent.trim();
   if (!trimmed) {
@@ -68,7 +74,13 @@ export function parseGroqContentAsJson<T>(rawContent: string): T {
   try {
     return JSON.parse(trimmed) as T;
   } catch {
-    return JSON.parse(extractJsonObject(trimmed)) as T;
+    const extracted = extractJsonObject(trimmed);
+
+    try {
+      return JSON.parse(extracted) as T;
+    } catch {
+      return JSON.parse(repairJsonLikeObject(extracted)) as T;
+    }
   }
 }
 

@@ -59,6 +59,23 @@ describe("parseGroqContentAsJson", () => {
     expect(parsed.candidates[0]?.startMs).toBe(1200);
   });
 
+  it("repairs JS-like object output with bare keys and trailing commas", () => {
+    const parsed = parseGroqContentAsJson<{
+      candidates: Array<{ startMs: number; endMs: number; reason: string }>;
+    }>(`{
+      candidates: [
+        { startMs: 1200, endMs: 5400, reason: "hook kuat", },
+      ],
+    }`);
+
+    expect(parsed.candidates).toHaveLength(1);
+    expect(parsed.candidates[0]).toEqual({
+      startMs: 1200,
+      endMs: 5400,
+      reason: "hook kuat",
+    });
+  });
+
   it("throws when content has no valid JSON object", () => {
     expect(() => parseGroqContentAsJson("not-json")).toThrow(
       "Respons AI tidak mengandung JSON object yang valid"
