@@ -28,6 +28,31 @@ type YtdlCookie = {
 
 export type YtdlRequestOptions = Pick<ytdl.getInfoOptions, "requestOptions" | "playerClients" | "agent">;
 
+export type YoutubeDownloaderMode = "yt-dlp-primary" | "hybrid" | "ytdl-core-primary";
+
+export type YoutubeDownloaderErrorKind =
+  | "bot_check"
+  | "rate_limit"
+  | "forbidden"
+  | "cookie_invalid_or_stale"
+  | "no_playable_formats"
+  | "binary_missing"
+  | "js_runtime_missing"
+  | "proxy_error"
+  | "unknown";
+
+export type YoutubeDownloaderEngine = "yt-dlp" | "ytdl-core";
+
+export type YoutubeFallbackPlan = {
+  primary: YoutubeDownloaderEngine;
+  fallbackTo: YoutubeDownloaderEngine | null;
+  shouldFallback: boolean;
+  reason:
+    | YoutubeDownloaderErrorKind
+    | "mode_prefers_primary_only"
+    | "policy_disallows_fallback";
+};
+
 type WrappedCookieExport = {
   data?: string;
   url?: string;
@@ -113,6 +138,67 @@ export function isForbiddenError(error: unknown): boolean {
   return lower.includes("403") || lower.includes("forbidden");
 }
 
+export function getYoutubeDownloaderMode(
+  raw = process.env.YOUTUBE_DOWNLOADER_MODE,
+): YoutubeDownloaderMode {
+  const normalized = (raw || "").trim().toLowerCase();
+  if (normalized === "hybrid") {
+    return "hybrid";
+  }
+  if (normalized === "ytdl-core-primary") {
+    return "ytdl-core-primary";
+  }
+  return "yt-dlp-primary";
+}
+
+export function classifyYoutubeDownloaderError(error: unknown): YoutubeDownloaderErrorKind {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error || "").toLowerCase();
+
+  if (message.includes("sign in to confirm") || message.includes("not a bot")) {
+    return "bot_check";
+  }
+  if (
+    message.includes("failed to find any playable formats") ||
+    message.includes("format audio+video gabungan tidak ditemukan")
+  ) {
+    return "no_playable_formats";
+  }
+  if (message.includes("429") || message.includes("too many requests")) {
+    return "rate_limit";
+  }
+  if (message.includes("403") || message.includes("forbidden")) {
+    return "forbidden";
+  }
+  if (
+    message.includes("cookie") &&
+    (message.includes("invalid") || message.includes("expired") || message.includes("stale"))
+  ) {
+    return "cookie_invalid_or_stale";
+  }
+  if (
+    message.includes("spawn yt-dlp") ||
+    message.includes("spawn /") ||
+    message.includes("yt-dlp: no such file or directory") ||
+    message.includes("yt-dlp executable not found")
+  ) {
+    return "binary_missing";
+  }
+  if (
+    message.includes("javascript runtime is required") ||
+    message.includes("js runtime is required") ||
+    message.includes("no javascript runtime") ||
+    message.includes("no js runtime") ||
+    (message.includes("--js-runtimes") && message.includes("required"))
+  ) {
+    return "js_runtime_missing";
+  }
+  if (message.includes("proxy")) {
+    return "proxy_error";
+  }
+
+  return "unknown";
+}
+
 export function parseBooleanFlag(value: string | undefined | null, defaultValue = false): boolean {
   if (!value) {
     return defaultValue;
@@ -168,6 +254,35 @@ function getPlayerClientsForAttempt(attempt: number): Array<
 
 export function shouldEnableYtDlpFallback(): boolean {
   return parseBooleanFlag(process.env.YOUTUBE_ENABLE_YTDLP_FALLBACK, true);
+}
+
+export function decideYoutubeFallbackPlan(
+  mode: YoutubeDownloaderMode,
+  errorKind: YoutubeDownloaderErrorKind,
+): YoutubeFallbackPlan {
+  if (mode === "ytdl-core-primary") {
+    const shouldFallback = ["bot_check", "rate_limit", "forbidden", "no_playable_formats"].includes(errorKind);
+    return {
+      primary: "ytdl-core",
+      fallbackTo: shouldFallback ? "yt-dlp" : null,
+      shouldFallback,
+      reason: shouldFallback ? errorKind : "policy_disallows_fallback",
+    };
+  }
+
+  const shouldFallback =
+    mode === "hybrid"
+      ? ["bot_check", "rate_limit", "forbidden", "no_playable_formats", "binary_missing", "js_runtime_missing"].includes(
+          errorKind,
+        )
+      : ["binary_missing", "js_runtime_missing"].includes(errorKind);
+
+  return {
+    primary: "yt-dlp",
+    fallbackTo: shouldFallback ? "ytdl-core" : null,
+    shouldFallback,
+    reason: shouldFallback ? errorKind : "policy_disallows_fallback",
+  };
 }
 
 function getYtDlpBin(): string {
@@ -976,9 +1091,32 @@ export async function buildYoutubeRequestOptions(opts?: {
   return options;
 }
 
+export function getYoutubeImportErrorStatus(error: unknown): number {
+  const rawMessage = error instanceof Error ? error.message : String(error || "");
+  const lower = rawMessage.toLowerCase();
+  const errorKind = classifyYoutubeDownloaderError(error);
+
+  if (errorKind === "rate_limit" || lower.includes("rate limit")) {
+    return 429;
+  }
+
+  if (
+    errorKind === "cookie_invalid_or_stale" ||
+    errorKind === "forbidden" ||
+    errorKind === "no_playable_formats" ||
+    lower.includes("url youtube tidak valid") ||
+    lower.includes("youtube memblokir request")
+  ) {
+    return 400;
+  }
+
+  return 500;
+}
+
 export function toFriendlyYoutubeError(error: unknown): Error {
   const rawMessage = error instanceof Error ? error.message : "Gagal mengambil data video YouTube";
   const lower = rawMessage.toLowerCase();
+  const errorKind = classifyYoutubeDownloaderError(error);
 
   if (
     lower.includes("sign in to confirm you’re not a bot") ||
@@ -992,6 +1130,24 @@ export function toFriendlyYoutubeError(error: unknown): Error {
   if (lower.includes("429") || lower.includes("too many requests")) {
     return new Error(
       "YouTube rate limit (429). Coba lagi beberapa saat, kurangi frekuensi request, atau ganti IP."
+    );
+  }
+
+  if (errorKind === "cookie_invalid_or_stale") {
+    return new Error(
+      "Cookies YouTube tidak valid atau sudah stale/expired. Export ulang cookies akun YouTube yang masih aktif lalu update YOUTUBE_COOKIES_FILE/YOUTUBE_COOKIES_JSON/YOUTUBE_COOKIES_BASE64."
+    );
+  }
+
+  if (errorKind === "binary_missing") {
+    return new Error(
+      "Binary yt-dlp tidak ditemukan di server. Install yt-dlp atau tambahkan ke PATH, lalu coba lagi."
+    );
+  }
+
+  if (errorKind === "js_runtime_missing") {
+    return new Error(
+      "yt-dlp butuh JavaScript runtime untuk extractor YouTube ini. Install runtime yang didukung dan aktifkan via --js-runtimes, atau update yt-dlp ke nightly."
     );
   }
 

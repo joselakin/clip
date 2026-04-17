@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createReadStream, existsSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -85,7 +85,7 @@ async function testYtdlCoreWithCookie(env) {
         "Accept-Language": "en-US,en;q=0.9",
       },
     },
-    playerClients: ["WEB_EMBEDDED", "IOS", "ANDROID", "TV"],
+    playerClients: ["WEB", "WEB_EMBEDDED", "IOS", "ANDROID", "TV"],
     agent: ytdl.createAgent(cookies),
   };
 
@@ -93,7 +93,7 @@ async function testYtdlCoreWithCookie(env) {
   return started;
 }
 
-async function testYtdlStart(url, options, label) {
+async function testYtdlStart(url, options) {
   try {
     const info = await ytdl.getInfo(url, options);
     const stream = ytdl.downloadFromInfo(info, {
@@ -195,31 +195,74 @@ async function testYtDlp(env) {
   });
 }
 
+function normalizeDownloaderMode(value) {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === "hybrid") return "hybrid";
+  if (normalized === "ytdl-core-primary") return "ytdl-core-primary";
+  return "yt-dlp-primary";
+}
+
+function getConfiguredLabelsForMode(downloaderMode) {
+  if (downloaderMode === "ytdl-core-primary") {
+    return ["ytdl-core/no-cookie", "ytdl-core/with-cookie", "yt-dlp-primary"];
+  }
+  if (downloaderMode === "hybrid") {
+    return ["yt-dlp-primary", "ytdl-core/with-cookie", "ytdl-core/no-cookie"];
+  }
+  return ["yt-dlp-primary", "ytdl-core/with-cookie", "ytdl-core/no-cookie"];
+}
+
+function getRecommendedResult(results, downloaderMode) {
+  const configuredLabels = getConfiguredLabelsForMode(downloaderMode);
+
+  for (const label of configuredLabels) {
+    const preferred = results.find(([name, result]) => name === label && result.ok);
+    if (preferred) {
+      return preferred;
+    }
+  }
+
+  return results.find(([, result]) => result.ok) || null;
+}
+
 async function main() {
   const env = await loadEnv();
+  const configuredMode = env.YOUTUBE_DOWNLOADER_MODE?.trim() || "yt-dlp-primary";
+  const downloaderMode = normalizeDownloaderMode(configuredMode);
 
   const results = [];
   results.push(["ytdl-core/no-cookie", await testYtdlCoreNoCookie(env)]);
   results.push(["ytdl-core/with-cookie", await testYtdlCoreWithCookie(env)]);
 
   await sleep(250);
-  results.push(["yt-dlp", await testYtDlp(env)]);
+  results.push(["yt-dlp-primary", await testYtDlp(env)]);
 
   console.log(`URL: ${TARGET_URL}`);
+  console.log(`YOUTUBE_DOWNLOADER_MODE (configured): ${configuredMode}`);
+  console.log(`YOUTUBE_DOWNLOADER_MODE (normalized): ${downloaderMode}`);
   console.log("--- HASIL TEST DOWNLOADER ---");
+
+  const configuredLabels = getConfiguredLabelsForMode(downloaderMode);
+  const primaryLabel = configuredLabels[0] ?? null;
 
   for (const [name, result] of results) {
     const status = result.ok ? "PASS" : "FAIL";
-    console.log(`${status} ${name} -> ${result.reason}`);
+    const modeLabel = name === primaryLabel ? "primary" : configuredLabels.includes(name) ? "fallback" : "alternate";
+    console.log(`${status} ${name} [${modeLabel}] -> ${result.reason}`);
   }
 
-  const winner = results.find(([, result]) => result.ok);
+  const winner = getRecommendedResult(results, downloaderMode);
   if (winner) {
-    console.log(`REKOMENDASI: pakai ${winner[0]} (sudah terbukti mulai download).`);
+    const recommendationLabel = winner[0] === primaryLabel
+      ? `primary path for ${downloaderMode}`
+      : configuredLabels.includes(winner[0])
+        ? `recommended fallback for ${downloaderMode}`
+        : `alternate path outside ${downloaderMode}`;
+    console.log(`REKOMENDASI: pakai ${winner[0]} (${recommendationLabel}, sudah terbukti mulai download).`);
     process.exit(0);
   }
 
-  console.log("REKOMENDASI: belum ada downloader yang bisa mulai download dari environment/IP ini.");
+  console.log(`REKOMENDASI: mode ${downloaderMode} tidak punya path yang bisa mulai download di environment/IP ini.`);
   process.exit(1);
 }
 

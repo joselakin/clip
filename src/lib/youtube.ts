@@ -11,9 +11,12 @@ import { createLogger } from "@/lib/logger";
 import { getStorageRootDir } from "@/lib/storage";
 import {
   buildYoutubeRequestOptions,
+  classifyYoutubeDownloaderError,
+  decideYoutubeFallbackPlan,
   downloadYoutubeVideoWithYtDlp,
   extractCodecs,
   getRetryDelayMs,
+  getYoutubeDownloaderMode,
   getYoutubeRetryConfig,
   isBotCheckError,
   isForbiddenError,
@@ -26,16 +29,10 @@ import {
 
 const logger = createLogger("lib/youtube");
 
-export async function downloadYoutubeVideoToLocal(url: string) {
+type YoutubeDownloadResult = Awaited<ReturnType<typeof downloadYoutubeVideoWithYtDlp>>;
+
+async function downloadYoutubeVideoWithYtdlCore(url: string): Promise<YoutubeDownloadResult> {
   const trimmedUrl = url.trim();
-
-  logger.info("download_request_started", { url: trimmedUrl });
-
-  if (!ytdl.validateURL(trimmedUrl)) {
-    logger.warn("invalid_youtube_url", { url: trimmedUrl });
-    throw new Error("URL YouTube tidak valid");
-  }
-
   const baseOptions = await buildYoutubeRequestOptions({ includeCookies: false, playerAttempt: 0 });
   const hasCookieConfig = Boolean(
     process.env.YOUTUBE_COOKIES_FILE?.trim() ||
@@ -106,18 +103,7 @@ export async function downloadYoutubeVideoToLocal(url: string) {
   }
 
   if (!info) {
-    if (
-      lastError &&
-      shouldEnableYtDlpFallback() &&
-      (isRateLimitedError(lastError) || isBotCheckError(lastError) || isForbiddenError(lastError))
-    ) {
-      logger.warn("youtube_fallback_to_ytdlp", {
-        reason: lastError instanceof Error ? lastError.message : "Unknown error",
-      });
-      return downloadYoutubeVideoWithYtDlp(trimmedUrl);
-    }
-
-    throw toFriendlyYoutubeError(lastError || new Error("Gagal mengambil info video YouTube"));
+    throw lastError || new Error("Gagal mengambil info video YouTube");
   }
 
   logger.info("youtube_info_resolved", { videoId: info.videoDetails.videoId });
@@ -159,10 +145,12 @@ export async function downloadYoutubeVideoToLocal(url: string) {
   try {
     await pipeline(stream, createWriteStream(outputPath));
   } catch (error) {
+    await unlink(outputPath).catch(() => undefined);
     logger.error("youtube_download_stream_failed", {
       message: error instanceof Error ? error.message : "Unknown error",
+      outputPath,
     });
-    throw toFriendlyYoutubeError(error);
+    throw error;
   }
   logger.info("download_stream_completed", { outputPath, downloadedBytes });
 
@@ -192,6 +180,73 @@ export async function downloadYoutubeVideoToLocal(url: string) {
     videoCodec,
     audioCodec,
   };
+}
+
+export async function downloadYoutubeVideoToLocal(url: string) {
+  const trimmedUrl = url.trim();
+
+  logger.info("download_request_started", { url: trimmedUrl });
+
+  if (!ytdl.validateURL(trimmedUrl)) {
+    logger.warn("invalid_youtube_url", { url: trimmedUrl });
+    throw new Error("URL YouTube tidak valid");
+  }
+
+  const downloaderMode = getYoutubeDownloaderMode();
+  const primaryEngine = decideYoutubeFallbackPlan(downloaderMode, "unknown").primary;
+
+  try {
+    if (primaryEngine === "yt-dlp") {
+      return await downloadYoutubeVideoWithYtDlp(trimmedUrl);
+    }
+
+    return await downloadYoutubeVideoWithYtdlCore(trimmedUrl);
+  } catch (error) {
+    const errorKind = classifyYoutubeDownloaderError(error);
+    const fallbackPlan = decideYoutubeFallbackPlan(downloaderMode, errorKind);
+
+    logger.warn("youtube_download_primary_failed", {
+      mode: downloaderMode,
+      primary: fallbackPlan.primary,
+      fallbackTo: fallbackPlan.fallbackTo,
+      errorKind,
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+
+    const fallbackAllowed =
+      fallbackPlan.shouldFallback &&
+      fallbackPlan.fallbackTo !== null &&
+      (fallbackPlan.fallbackTo !== "yt-dlp" || shouldEnableYtDlpFallback());
+
+    if (!fallbackAllowed) {
+      throw toFriendlyYoutubeError(error);
+    }
+
+    logger.warn("youtube_download_fallback_started", {
+      mode: downloaderMode,
+      from: fallbackPlan.primary,
+      to: fallbackPlan.fallbackTo,
+      reason: fallbackPlan.reason,
+    });
+
+    try {
+      if (fallbackPlan.fallbackTo === "yt-dlp") {
+        return await downloadYoutubeVideoWithYtDlp(trimmedUrl);
+      }
+
+      return await downloadYoutubeVideoWithYtdlCore(trimmedUrl);
+    } catch (fallbackError) {
+      logger.error("youtube_download_fallback_failed", {
+        mode: downloaderMode,
+        from: fallbackPlan.primary,
+        to: fallbackPlan.fallbackTo,
+        primaryErrorKind: errorKind,
+        fallbackErrorKind: classifyYoutubeDownloaderError(fallbackError),
+        message: fallbackError instanceof Error ? fallbackError.message : "Unknown error",
+      });
+      throw toFriendlyYoutubeError(fallbackError);
+    }
+  }
 }
 
 export async function removeDownloadedFile(filePath: string) {

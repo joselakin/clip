@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { isValidSessionToken, SESSION_COOKIE_NAME } from "@/lib/auth";
 import { parseClipCountTarget, parseClipDurationPreset } from "@/lib/clip-duration";
+import { getYoutubeImportErrorStatus } from "@/lib/youtube/helpers";
 import { createLogger } from "@/lib/logger";
 import { downloadYoutubeVideoToLocal, removeDownloadedFile } from "@/lib/youtube";
 import { prisma } from "@/lib/prisma";
@@ -307,14 +308,7 @@ export async function POST(request: NextRequest) {
     }
 
     const message = error instanceof Error ? error.message : "Gagal memproses URL YouTube";
-    const lower = message.toLowerCase();
-    const status = lower.includes("rate limit")
-      ? 429
-      : lower.includes("url youtube tidak valid") ||
-          lower.includes("youtube memblokir request") ||
-          lower.includes("cookies youtube")
-        ? 400
-        : 500;
+    const status = getYoutubeImportErrorStatus(error);
 
     if (status >= 500) {
       logger.error("import_failed", { message, error });
