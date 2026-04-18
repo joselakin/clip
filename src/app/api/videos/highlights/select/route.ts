@@ -10,6 +10,11 @@ import {
   type ClipDurationPreset,
 } from "@/lib/clip-duration";
 import { decryptSecret } from "@/lib/crypto";
+import {
+  DEFAULT_EMOTION_CONTEXT,
+  parseEmotionContext,
+  type EmotionContext,
+} from "@/lib/emotion-context";
 import { evaluateClipRecommendationsWithGroq, selectHighlightsWithGroq } from "@/lib/groq";
 import { runIterativeHighlightPipeline } from "@/lib/highlight-pipeline";
 import { findRunningJobForStep } from "@/lib/job-dedupe";
@@ -116,6 +121,10 @@ type ClipEvaluationReview = {
   whyThisWorks: string;
   improvementTip: string;
   angle?: string;
+  matchedEmotionContext?: EmotionContext;
+  emotionFitScore?: number;
+  emotionFitReason?: string;
+  emotionFallback?: boolean;
 };
 
 type NormalizedCandidate = {
@@ -125,12 +134,28 @@ type NormalizedCandidate = {
   scoreText: number;
   reason: string;
   topic?: string;
+  matchedEmotionContext?: EmotionContext;
+  emotionFitScore?: number;
+  emotionFitReason?: string;
+  emotionFallback?: boolean;
   review: ClipEvaluationReview;
 };
 
-type HighlightPipelineMode = "legacy" | "iterative";
+ type HighlightPipelineMode = "legacy" | "iterative";
 
-function resolveHighlightPipelineMode(rawMode: string | undefined): HighlightPipelineMode {
+function resolveRequestedEmotionContext(
+  rawEmotionContext: unknown,
+  storedEmotionContext: EmotionContext | null | undefined,
+): EmotionContext {
+  if (typeof rawEmotionContext === "string" && rawEmotionContext.trim()) {
+    return parseEmotionContext(rawEmotionContext, storedEmotionContext || DEFAULT_EMOTION_CONTEXT);
+  }
+
+  return storedEmotionContext || DEFAULT_EMOTION_CONTEXT;
+}
+
+ function resolveHighlightPipelineMode(rawMode: string | undefined): HighlightPipelineMode {
+
   const normalizedMode = rawMode?.trim().toLowerCase();
   return normalizedMode === "legacy" ? "legacy" : "iterative";
 }
@@ -148,12 +173,14 @@ export async function POST(request: NextRequest) {
     videoId?: string;
     durationPreset?: string;
     clipCountTarget?: string | number;
+    emotionContext?: string;
   };
   try {
     body = (await request.json()) as {
       videoId?: string;
       durationPreset?: string;
       clipCountTarget?: string | number;
+      emotionContext?: string;
     };
   } catch {
     logger.warn("validation_failed_invalid_json");
@@ -168,7 +195,6 @@ export async function POST(request: NextRequest) {
 
   const video = await prisma.video.findUnique({
     where: { id: videoId },
-    select: { metadata: true },
   });
 
   if (!video) {
@@ -179,6 +205,7 @@ export async function POST(request: NextRequest) {
   const durationPreset = resolveDurationPreset(body.durationPreset, video.metadata);
   const durationConfig = getClipDurationPresetConfig(durationPreset);
   const clipCountTarget = resolveClipCountTarget(body.clipCountTarget, video.metadata);
+  const emotionContext = resolveRequestedEmotionContext(body.emotionContext, video.requestedEmotionContext);
 
   const transcriptSegments = await prisma.transcriptSegment.findMany({
     where: { videoId },
@@ -258,6 +285,7 @@ export async function POST(request: NextRequest) {
           transcriptCount: transcriptSegments.length,
           clipDurationPreset: durationPreset,
           clipCountTarget,
+          emotionContext,
           clipMinDurationMs: durationConfig.minDurationMs,
           clipMaxDurationMs: durationConfig.maxDurationMs,
         },
@@ -287,6 +315,7 @@ export async function POST(request: NextRequest) {
         maxCandidates: clipCountTarget,
         durationRule: durationConfig.promptRule,
         extraRules: durationConfig.extraPromptRule ? [durationConfig.extraPromptRule] : undefined,
+        emotionContext,
       });
       originalCandidateCount = selectionWithDuration.candidates.length;
       selectionModel = selectionWithDuration.model;
@@ -323,7 +352,8 @@ export async function POST(request: NextRequest) {
       const evaluation = await evaluateClipRecommendationsWithGroq(
         transcriptSegments,
         baseCandidates,
-        apiKey
+        apiKey,
+        { emotionContext }
       );
       reviewModel = evaluation.model;
 
@@ -340,6 +370,10 @@ export async function POST(request: NextRequest) {
           whyThisWorks: row.whyThisWorks,
           improvementTip: row.improvementTip,
           angle: row.angle,
+          matchedEmotionContext: row.matchedEmotionContext,
+          emotionFitScore: row.emotionFitScore,
+          emotionFitReason: row.emotionFitReason,
+          emotionFallback: row.emotionFallback,
         });
       }
 
@@ -356,6 +390,10 @@ export async function POST(request: NextRequest) {
             whyThisWorks: candidate.reason,
             improvementTip: "Perkuat kalimat pembuka agar hook makin cepat terasa.",
             angle: candidate.topic,
+            matchedEmotionContext: candidate.matchedEmotionContext,
+            emotionFitScore: candidate.emotionFitScore,
+            emotionFitReason: candidate.emotionFitReason,
+            emotionFallback: candidate.emotionFallback,
           };
 
         return {
@@ -381,13 +419,15 @@ export async function POST(request: NextRequest) {
         jobId,
         transcriptSegments,
         apiKey,
-        clipCountTarget,
-        durationPreset,
-        durationRangeMs: {
-          min: durationConfig.minDurationMs,
-          max: durationConfig.maxDurationMs,
-        },
-      });
+          clipCountTarget,
+          durationPreset,
+          emotionContext,
+          durationRangeMs: {
+            min: durationConfig.minDurationMs,
+            max: durationConfig.maxDurationMs,
+          },
+        });
+
 
       pipelineVersion = iterative.runSummary.pipelineVersion;
       pipelineRunId = iterative.runSummary.runId;
@@ -406,26 +446,35 @@ export async function POST(request: NextRequest) {
           transcriptMaxEndMs
         );
 
-        return {
-          startMs: durationAligned.startMs,
-          endMs: durationAligned.endMs,
-          scoreTotal: clamp(candidate.scoreTotal, 0, 1),
-          scoreText: clamp(candidate.scoreText, 0, 1),
-          reason: candidate.reason,
-          topic: candidate.topic,
-          review: {
-            recommendedTitle: candidate.review.recommendedTitle,
-            overallScore: candidate.review.overallScore,
-            hookScore: candidate.review.hookScore,
-            valueScore: candidate.review.valueScore,
-            clarityScore: candidate.review.clarityScore,
-            emotionScore: candidate.review.emotionScore,
-            shareabilityScore: candidate.review.shareabilityScore,
-            whyThisWorks: candidate.review.whyThisWorks,
-            improvementTip: candidate.review.improvementTip,
-            angle: candidate.review.angle,
-          },
-        };
+          return {
+            startMs: durationAligned.startMs,
+            endMs: durationAligned.endMs,
+            scoreTotal: clamp(candidate.scoreTotal, 0, 1),
+            scoreText: clamp(candidate.scoreText, 0, 1),
+            reason: candidate.reason,
+            topic: candidate.topic,
+            matchedEmotionContext: candidate.matchedEmotionContext,
+            emotionFitScore: candidate.emotionFitScore,
+            emotionFitReason: candidate.emotionFitReason,
+            emotionFallback: candidate.emotionFallback,
+            review: {
+              recommendedTitle: candidate.review.recommendedTitle,
+              overallScore: candidate.review.overallScore,
+              hookScore: candidate.review.hookScore,
+              valueScore: candidate.review.valueScore,
+              clarityScore: candidate.review.clarityScore,
+              emotionScore: candidate.review.emotionScore,
+              shareabilityScore: candidate.review.shareabilityScore,
+              whyThisWorks: candidate.review.whyThisWorks,
+              improvementTip: candidate.review.improvementTip,
+              angle: candidate.review.angle,
+              matchedEmotionContext: candidate.review.matchedEmotionContext,
+              emotionFitScore: candidate.review.emotionFitScore,
+              emotionFitReason: candidate.review.emotionFitReason,
+              emotionFallback: candidate.review.emotionFallback,
+            },
+          };
+
       });
 
       logger.info("highlight_selection_completed", {
@@ -452,7 +501,7 @@ export async function POST(request: NextRequest) {
       await tx.highlightCandidate.deleteMany({ where: { videoId } });
 
       for (const [index, candidate] of normalizedCandidates.entries()) {
-        await tx.highlightCandidate.create({
+        await ((tx.highlightCandidate.create as unknown) as (args: Record<string, unknown>) => Promise<unknown>)({
           data: {
             videoId,
             jobId,
@@ -460,11 +509,20 @@ export async function POST(request: NextRequest) {
             endMs: candidate.endMs,
             scoreTotal: new Prisma.Decimal(candidate.scoreTotal.toFixed(4)),
             scoreText: new Prisma.Decimal(candidate.scoreText.toFixed(4)),
+            matchedEmotionContext: candidate.matchedEmotionContext || null,
+            emotionFitScore: candidate.emotionFitScore ?? null,
+            emotionFitReason: candidate.emotionFitReason || null,
+            emotionFallback: candidate.emotionFallback ?? false,
             reasonJson: {
               method: "groq-llm",
               model: selectionModel,
               reason: candidate.reason,
               topic: candidate.topic || null,
+              requestedEmotionContext: emotionContext,
+              matchedEmotionContext: candidate.matchedEmotionContext || null,
+              emotionFitScore: candidate.emotionFitScore ?? null,
+              emotionFitReason: candidate.emotionFitReason || null,
+              emotionFallback: candidate.emotionFallback ?? false,
               clipDurationPreset: durationPreset,
               clipDurationRangeMs: {
                 min: durationConfig.minDurationMs,
@@ -486,6 +544,10 @@ export async function POST(request: NextRequest) {
                 whyThisWorks: candidate.review.whyThisWorks,
                 improvementTip: candidate.review.improvementTip,
                 angle: candidate.review.angle || null,
+                matchedEmotionContext: candidate.review.matchedEmotionContext || null,
+                emotionFitScore: candidate.review.emotionFitScore ?? null,
+                emotionFitReason: candidate.review.emotionFitReason || null,
+                emotionFallback: candidate.review.emotionFallback ?? false,
               },
             },
             rankOrder: index + 1,
@@ -504,6 +566,7 @@ export async function POST(request: NextRequest) {
               provider: "groq",
               model: selectionModel,
               reviewModel,
+              requestedEmotionContext: emotionContext,
               clipDurationPreset: durationPreset,
               clipDurationRangeMs: {
                 min: durationConfig.minDurationMs,
@@ -537,6 +600,7 @@ export async function POST(request: NextRequest) {
             reviewModel,
             clipDurationPreset: durationPreset,
             clipCountTarget,
+            emotionContext,
             pipelineMode,
             pipelineVersion,
             runId: pipelineRunId,
@@ -576,12 +640,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       ok: true,
       message: "Highlight selection selesai",
-      highlights: {
-        model: selectionModel,
-        clipDurationPreset: durationPreset,
-        clipCountTarget,
-        reviewModel,
-        pipelineMode,
+        highlights: {
+          model: selectionModel,
+          clipDurationPreset: durationPreset,
+          clipCountTarget,
+          emotionContext,
+          reviewModel,
+          pipelineMode,
+
         pipelineVersion,
         runId: pipelineRunId,
         candidates: normalizedCandidates,

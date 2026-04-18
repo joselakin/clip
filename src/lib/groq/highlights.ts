@@ -1,5 +1,11 @@
 import { createLogger } from "@/lib/logger";
 import {
+  DEFAULT_EMOTION_CONTEXT,
+  getEmotionContextPromptGuidance,
+  parseEmotionContext,
+  type EmotionContext,
+} from "@/lib/emotion-context";
+import {
   buildCandidateWindowText,
   buildGroqModelsEndpoint,
   clamp,
@@ -18,7 +24,14 @@ export type TranscriptForSelection = {
   text: string;
 };
 
-export type GroqHighlightCandidate = {
+type EmotionFitFields = {
+  matchedEmotionContext?: EmotionContext;
+  emotionFitScore?: number;
+  emotionFitReason?: string;
+  emotionFallback?: boolean;
+};
+
+export type GroqHighlightCandidate = EmotionFitFields & {
   startMs: number;
   endMs: number;
   scoreTotal: number;
@@ -27,7 +40,7 @@ export type GroqHighlightCandidate = {
   topic?: string;
 };
 
-export type GroqClipEvaluation = {
+export type GroqClipEvaluation = EmotionFitFields & {
   startMs: number;
   endMs: number;
   recommendedTitle: string;
@@ -46,9 +59,10 @@ type HighlightSelectionOptions = {
   maxCandidates?: number;
   durationRule?: string;
   extraRules?: string[];
+  emotionContext?: EmotionContext;
 };
 
-export type HighlightCriticEvaluation = {
+export type HighlightCriticEvaluation = EmotionFitFields & {
   startMs: number;
   endMs: number;
   overallScore: number;
@@ -73,6 +87,7 @@ type SelectHighlightsForWindowInput = {
 
 type CriticEvaluateOptions = {
   passThreshold?: number;
+  emotionContext?: EmotionContext;
 };
 
 function normalizeCandidates(input: unknown): GroqHighlightCandidate[] {
@@ -116,6 +131,7 @@ function normalizeCandidates(input: unknown): GroqHighlightCandidate[] {
         scoreText,
         reason,
         topic,
+        ...normalizeEmotionFitFields(item),
       };
     })
     .filter((item): item is GroqHighlightCandidate => item !== null)
@@ -136,6 +152,69 @@ function normalizeFailureReasons(value: unknown): string[] {
     .map((item) => (typeof item === "string" ? item.trim() : ""))
     .filter((item) => item.length > 0)
     .slice(0, 5);
+}
+
+function normalizeOptionalEmotionContext(value: unknown): EmotionContext | undefined {
+  const parsed = parseEmotionContext(value, DEFAULT_EMOTION_CONTEXT);
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  return parsed === DEFAULT_EMOTION_CONTEXT && value.trim().toLowerCase() !== DEFAULT_EMOTION_CONTEXT
+    ? undefined
+    : parsed;
+}
+
+function normalizeOptionalEmotionFitScore(value: unknown): number | undefined {
+  if (value === null || value === undefined || value === "") {
+    return undefined;
+  }
+  return normalizeScore100(value, 0);
+}
+
+function normalizeOptionalEmotionFitReason(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function normalizeOptionalEmotionFallback(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(normalized)) {
+      return true;
+    }
+    if (["false", "0", "no", "off"].includes(normalized)) {
+      return false;
+    }
+  }
+  return undefined;
+}
+
+function normalizeEmotionFitFields(item: Record<string, unknown>): EmotionFitFields {
+  return {
+    matchedEmotionContext: normalizeOptionalEmotionContext(item.matchedEmotionContext),
+    emotionFitScore: normalizeOptionalEmotionFitScore(item.emotionFitScore),
+    emotionFitReason: normalizeOptionalEmotionFitReason(item.emotionFitReason),
+    emotionFallback: normalizeOptionalEmotionFallback(item.emotionFallback),
+  };
+}
+
+function buildEmotionPromptBlock(emotionContext: EmotionContext): string[] {
+  if (emotionContext === DEFAULT_EMOTION_CONTEXT) {
+    return [];
+  }
+
+  return [
+    `- Requested emotion context: ${emotionContext}`,
+    `- Emotion guidance: ${getEmotionContextPromptGuidance(emotionContext)}`,
+    "- Jika cocok, isi matchedEmotionContext, emotionFitScore (0-100), emotionFitReason, dan emotionFallback.",
+    "- Jika kecocokan emosinya lemah tapi kandidat tetap layak, emotionFallback boleh true.",
+  ];
 }
 
 function normalizeCriticEvaluations(
@@ -213,6 +292,7 @@ function normalizeCriticEvaluations(
         failureReasons,
         fixGuidance,
         topic,
+        ...normalizeEmotionFitFields(item),
       };
     })
     .filter((item): item is HighlightCriticEvaluation => item !== null);
@@ -315,6 +395,7 @@ function normalizeClipEvaluations(input: unknown): GroqClipEvaluation[] {
         whyThisWorks,
         improvementTip,
         angle,
+        ...normalizeEmotionFitFields(item),
       };
     })
     .filter((item): item is GroqClipEvaluation => item !== null);
@@ -326,6 +407,7 @@ export async function selectHighlightsWithGroq(
   options?: HighlightSelectionOptions
 ) {
   const maxCandidates = Math.max(1, Math.min(10, Math.round(options?.maxCandidates ?? 6)));
+  const emotionContext = options?.emotionContext ?? DEFAULT_EMOTION_CONTEXT;
   const requestedModel = process.env.GROQ_HIGHLIGHT_MODEL?.trim() || "openai/gpt-oss-120b";
   const endpoint =
     process.env.GROQ_CHAT_ENDPOINT?.trim() || "https://api.groq.com/openai/v1/chat/completions";
@@ -360,7 +442,8 @@ export async function selectHighlightsWithGroq(
     ...(options?.extraRules || []),
     "",
     "Format JSON wajib:",
-    '{"candidates":[{"startMs":1234,"endMs":34567,"scoreTotal":0.92,"scoreText":0.90,"reason":"...","topic":"..."}] }',
+    '{"candidates":[{"startMs":1234,"endMs":34567,"scoreTotal":0.92,"scoreText":0.90,"reason":"...","topic":"...","matchedEmotionContext":"joy","emotionFitScore":88,"emotionFitReason":"...","emotionFallback":false}] }',
+    ...buildEmotionPromptBlock(emotionContext),
     "",
     "Transcript:",
     compactTranscript,
@@ -384,6 +467,10 @@ export async function selectHighlightsWithGroq(
             scoreText: { type: "number" },
             reason: { type: "string" },
             topic: { type: "string" },
+            matchedEmotionContext: { type: "string" },
+            emotionFitScore: { type: "number" },
+            emotionFitReason: { type: "string" },
+            emotionFallback: { type: "boolean" },
           },
           required: ["startMs", "endMs", "scoreTotal", "scoreText", "reason"],
         },
@@ -446,8 +533,10 @@ export async function selectHighlightsWithGroq(
 export async function evaluateClipRecommendationsWithGroq(
   transcriptSegments: TranscriptForSelection[],
   candidates: GroqHighlightCandidate[],
-  apiKey: string
+  apiKey: string,
+  options?: { emotionContext?: EmotionContext },
 ) {
+  const emotionContext = options?.emotionContext ?? DEFAULT_EMOTION_CONTEXT;
   const requestedModel = process.env.GROQ_HIGHLIGHT_MODEL?.trim() || "openai/gpt-oss-120b";
   const endpoint =
     process.env.GROQ_CHAT_ENDPOINT?.trim() || "https://api.groq.com/openai/v1/chat/completions";
@@ -462,6 +551,10 @@ export async function evaluateClipRecommendationsWithGroq(
       startMs: candidate.startMs,
       endMs: candidate.endMs,
       currentReason: candidate.reason,
+      matchedEmotionContext: candidate.matchedEmotionContext || null,
+      emotionFitScore: candidate.emotionFitScore ?? null,
+      emotionFitReason: candidate.emotionFitReason || null,
+      emotionFallback: candidate.emotionFallback ?? null,
       transcriptWindow: buildCandidateWindowText(
         transcriptSegments,
         candidate.startMs,
@@ -483,12 +576,13 @@ export async function evaluateClipRecommendationsWithGroq(
     "Nilai semua kandidat berikut.",
     "Setiap kandidat harus dikembalikan dalam evaluations.",
     "Format JSON wajib:",
-    '{"evaluations":[{"startMs":1234,"endMs":34567,"recommendedTitle":"...","overallScore":90,"hookScore":92,"valueScore":88,"clarityScore":84,"emotionScore":86,"shareabilityScore":89,"whyThisWorks":"...","improvementTip":"...","angle":"..."}]}',
+    '{"evaluations":[{"startMs":1234,"endMs":34567,"recommendedTitle":"...","overallScore":90,"hookScore":92,"valueScore":88,"clarityScore":84,"emotionScore":86,"shareabilityScore":89,"whyThisWorks":"...","improvementTip":"...","angle":"...","matchedEmotionContext":"joy","emotionFitScore":88,"emotionFitReason":"...","emotionFallback":false}]}',
     "Aturan:",
     "- recommendedTitle: 5-12 kata, bahasa Indonesia natural, kuat di hook",
     "- whyThisWorks: 1 kalimat ringkas dan spesifik",
     "- improvementTip: 1 kalimat actionable",
     "- angle: optional, boleh kosong",
+    ...buildEmotionPromptBlock(emotionContext),
     "Candidates:",
     JSON.stringify(compactCandidates),
   ].join("\n");
@@ -517,6 +611,10 @@ export async function evaluateClipRecommendationsWithGroq(
             whyThisWorks: { type: "string" },
             improvementTip: { type: "string" },
             angle: { type: "string" },
+            matchedEmotionContext: { type: "string" },
+            emotionFitScore: { type: "number" },
+            emotionFitReason: { type: "string" },
+            emotionFallback: { type: "boolean" },
           },
           required: ["startMs", "endMs", "recommendedTitle"],
         },
@@ -621,6 +719,7 @@ export async function criticEvaluateHighlightsWithGroq(
     process.env.GROQ_CHAT_ENDPOINT?.trim() || "https://api.groq.com/openai/v1/chat/completions";
   const modelsEndpoint = buildGroqModelsEndpoint(endpoint);
   const passThreshold = Math.max(1, Math.min(100, Math.round(options?.passThreshold ?? 75)));
+  const emotionContext = options?.emotionContext ?? DEFAULT_EMOTION_CONTEXT;
 
   const availableModels = await listGroqModels(apiKey, modelsEndpoint);
   const candidateModels = resolveHighlightModelCandidates(requestedModel, availableModels);
@@ -630,6 +729,10 @@ export async function criticEvaluateHighlightsWithGroq(
     endMs: candidate.endMs,
     topic: candidate.topic || null,
     reason: candidate.reason,
+    matchedEmotionContext: candidate.matchedEmotionContext || null,
+    emotionFitScore: candidate.emotionFitScore ?? null,
+    emotionFitReason: candidate.emotionFitReason || null,
+    emotionFallback: candidate.emotionFallback ?? null,
     transcriptWindow: buildCandidateWindowText(
       transcriptSegments,
       candidate.startMs,
@@ -647,8 +750,9 @@ export async function criticEvaluateHighlightsWithGroq(
   const userPrompt = [
     `Tandai kandidat sebagai isPass=true jika overallScore >= ${passThreshold}, selain itu false.`,
     "Format JSON wajib:",
-    '{"evaluations":[{"startMs":1234,"endMs":4567,"overallScore":82,"hookScore":80,"valueScore":84,"clarityScore":78,"emotionScore":75,"noveltyScore":77,"shareabilityScore":83,"isPass":false,"failureReasons":["hook"],"fixGuidance":"...","topic":"..."}]}',
+    '{"evaluations":[{"startMs":1234,"endMs":4567,"overallScore":82,"hookScore":80,"valueScore":84,"clarityScore":78,"emotionScore":75,"noveltyScore":77,"shareabilityScore":83,"isPass":false,"failureReasons":["hook"],"fixGuidance":"...","topic":"...","matchedEmotionContext":"joy","emotionFitScore":80,"emotionFitReason":"...","emotionFallback":false}]}',
     "failureReasons contoh: hook,clarity,value,emotion,novelty,timing,cta.",
+    ...buildEmotionPromptBlock(emotionContext),
     "Candidates:",
     JSON.stringify(compactCandidates),
   ].join("\n");
@@ -676,6 +780,10 @@ export async function criticEvaluateHighlightsWithGroq(
             failureReasons: { type: "array", items: { type: "string" } },
             fixGuidance: { type: "string" },
             topic: { type: "string" },
+            matchedEmotionContext: { type: "string" },
+            emotionFitScore: { type: "number" },
+            emotionFitReason: { type: "string" },
+            emotionFallback: { type: "boolean" },
           },
           required: [
             "startMs",
@@ -751,8 +859,10 @@ export async function criticEvaluateHighlightsWithGroq(
 export async function regenerateHighlightsFromFailuresWithGroq(
   transcriptSegments: TranscriptForSelection[],
   failedEvaluations: HighlightCriticEvaluation[],
-  apiKey: string
+  apiKey: string,
+  options?: { emotionContext?: EmotionContext },
 ) {
+  const emotionContext = options?.emotionContext ?? DEFAULT_EMOTION_CONTEXT;
   const failures = failedEvaluations.filter((row) => !row.isPass);
   if (failures.length === 0) {
     return {
@@ -775,6 +885,10 @@ export async function regenerateHighlightsFromFailuresWithGroq(
     failureReasons: failure.failureReasons,
     fixGuidance: failure.fixGuidance,
     topic: failure.topic || null,
+    matchedEmotionContext: failure.matchedEmotionContext || null,
+    emotionFitScore: failure.emotionFitScore ?? null,
+    emotionFitReason: failure.emotionFitReason || null,
+    emotionFallback: failure.emotionFallback ?? null,
     context: buildCandidateWindowText(transcriptSegments, failure.startMs, failure.endMs, 520),
   }));
 
@@ -787,11 +901,12 @@ export async function regenerateHighlightsFromFailuresWithGroq(
   const userPrompt = [
     "Buat kandidat baru pengganti dari daftar kegagalan berikut.",
     "Format JSON wajib:",
-    '{"candidates":[{"startMs":1234,"endMs":5678,"scoreTotal":0.88,"scoreText":0.86,"reason":"...","topic":"..."}]}',
+    '{"candidates":[{"startMs":1234,"endMs":5678,"scoreTotal":0.88,"scoreText":0.86,"reason":"...","topic":"...","matchedEmotionContext":"joy","emotionFitScore":82,"emotionFitReason":"...","emotionFallback":false}]}',
     "Aturan:",
     "- Usahakan durasi 20-45 detik",
     "- Hindari overlap berat dengan rentang gagal",
     "- Gunakan timestamp yang masuk akal berdasarkan konteks",
+    ...buildEmotionPromptBlock(emotionContext),
     "Failures:",
     JSON.stringify(compactFailures),
   ].join("\n");
@@ -812,6 +927,10 @@ export async function regenerateHighlightsFromFailuresWithGroq(
             scoreText: { type: "number" },
             reason: { type: "string" },
             topic: { type: "string" },
+            matchedEmotionContext: { type: "string" },
+            emotionFitScore: { type: "number" },
+            emotionFitReason: { type: "string" },
+            emotionFallback: { type: "boolean" },
           },
           required: ["startMs", "endMs", "scoreTotal", "scoreText", "reason"],
         },

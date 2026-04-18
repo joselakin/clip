@@ -59,6 +59,18 @@ enum CredentialMode {
   system_managed
 }
 
+enum EmotionContext {
+  general
+  sadness
+  anger
+  tenderness
+  anxiety
+  joy
+  nostalgia
+  motivation
+  disappointment
+}
+
 model Video {
   id               String               @id @default(uuid()) @db.Uuid
   sourceType       String               @map("source_type") @db.Text
@@ -88,6 +100,7 @@ model Video {
   channels         Int?
   probeRawJson     Json                 @default("{}") @map("probe_raw_json")
   metadata         Json                 @default("{}")
+  requestedEmotionContext EmotionContext @default(general) @map("requested_emotion_context")
   createdAt        DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt        DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
   jobs             Job[]
@@ -197,6 +210,10 @@ model HighlightCandidate {
   scoreAudio  Decimal?  @map("score_audio") @db.Decimal(6, 4)
   scoreVisual Decimal?  @map("score_visual") @db.Decimal(6, 4)
   reasonJson  Json      @default("{}") @map("reason_json")
+  matchedEmotionContext EmotionContext? @map("matched_emotion_context")
+  emotionFitScore Int?  @map("emotion_fit_score")
+  emotionFitReason String? @map("emotion_fit_reason") @db.Text
+  emotionFallback Boolean @default(false) @map("emotion_fallback")
   rankOrder   Int?      @map("rank_order")
   isSelected  Boolean   @default(false) @map("is_selected")
   selectedBy  String?   @map("selected_by") @db.Text
@@ -220,6 +237,7 @@ model HighlightSelectionRun {
   status             JobStatus                  @default(running)
   clipCountTarget    Int                        @map("clip_count_target")
   durationPreset     String                     @map("duration_preset") @db.VarChar(40)
+  requestedEmotionContext EmotionContext        @default(general) @map("requested_emotion_context")
   maxIterations      Int                        @map("max_iterations")
   executedIterations Int                        @default(0) @map("executed_iterations")
   seedCandidateCount Int                        @default(0) @map("seed_candidate_count")

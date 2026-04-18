@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { isValidSessionToken, SESSION_COOKIE_NAME } from "@/lib/auth";
 import { parseClipCountTarget, parseClipDurationPreset } from "@/lib/clip-duration";
+import { parseEmotionContext } from "@/lib/emotion-context";
 import { getYoutubeImportErrorStatus } from "@/lib/youtube/helpers";
 import { createLogger } from "@/lib/logger";
 import { downloadYoutubeVideoToLocal, removeDownloadedFile } from "@/lib/youtube";
@@ -77,6 +78,7 @@ type WatermarkInput = {
   podcastTwoSpeakerMode: boolean;
   clipDurationPreset: ReturnType<typeof parseClipDurationPreset>;
   clipCountTarget: ReturnType<typeof parseClipCountTarget>;
+  emotionContext: ReturnType<typeof parseEmotionContext>;
   text: string | null;
   logoFile: File | null;
 };
@@ -108,6 +110,7 @@ async function parseIncomingBody(request: NextRequest): Promise<{
       podcastTwoSpeakerMode?: boolean | string;
       clipDurationPreset?: string;
       clipCountTarget?: string | number;
+      emotionContext?: string;
     };
     const layoutRaw = String(body.renderLayout || "standard").trim().toLowerCase();
     return {
@@ -117,6 +120,7 @@ async function parseIncomingBody(request: NextRequest): Promise<{
         podcastTwoSpeakerMode: parseBooleanFlag(body.podcastTwoSpeakerMode),
         clipDurationPreset: parseClipDurationPreset(body.clipDurationPreset),
         clipCountTarget: parseClipCountTarget(body.clipCountTarget),
+        emotionContext: parseEmotionContext(body.emotionContext),
         text: String(body.watermarkText || "").trim().slice(0, 120) || null,
         logoFile: null,
       },
@@ -129,14 +133,16 @@ async function parseIncomingBody(request: NextRequest): Promise<{
 
   return {
     url: String(form.get("url") || "").trim(),
-    watermark: {
-      renderLayout: layoutRaw === "framed" ? "framed" : "standard",
-      podcastTwoSpeakerMode: parseBooleanFlag(form.get("podcastTwoSpeakerMode")),
-      clipDurationPreset: parseClipDurationPreset(form.get("clipDurationPreset")),
-      clipCountTarget: parseClipCountTarget(form.get("clipCountTarget")),
-      text: String(form.get("watermarkText") || "").trim().slice(0, 120) || null,
-      logoFile: logoCandidate instanceof File && logoCandidate.size > 0 ? logoCandidate : null,
-    },
+      watermark: {
+        renderLayout: layoutRaw === "framed" ? "framed" : "standard",
+        podcastTwoSpeakerMode: parseBooleanFlag(form.get("podcastTwoSpeakerMode")),
+        clipDurationPreset: parseClipDurationPreset(form.get("clipDurationPreset")),
+        clipCountTarget: parseClipCountTarget(form.get("clipCountTarget")),
+        emotionContext: parseEmotionContext(form.get("emotionContext")),
+        text: String(form.get("watermarkText") || "").trim().slice(0, 120) || null,
+        logoFile: logoCandidate instanceof File && logoCandidate.size > 0 ? logoCandidate : null,
+      },
+
   };
 }
 
@@ -186,9 +192,10 @@ export async function POST(request: NextRequest) {
       }
 
       const oldMetadata = asObject(existing.metadata) || {};
-      await prisma.video.update({
+      await (prisma.video.update as unknown as (args: Record<string, unknown>) => Promise<unknown>)({
         where: { id: existing.id },
         data: {
+          requestedEmotionContext: payload.watermark.emotionContext,
           metadata: {
             ...oldMetadata,
             renderLayout: payload.watermark.renderLayout,
@@ -248,6 +255,7 @@ export async function POST(request: NextRequest) {
         originalFilename: `${downloaded.videoId}.${getExtensionFromStorageKey(downloaded.storageKey)}`,
         sha256: downloaded.sha256,
         durationMs: downloaded.durationMs,
+        requestedEmotionContext: payload.watermark.emotionContext,
         fps: downloaded.fps,
         width: downloaded.width,
         height: downloaded.height,

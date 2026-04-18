@@ -6,6 +6,11 @@ import {
   getClipDurationPresetConfig,
   type ClipDurationPreset,
 } from "@/lib/clip-duration";
+import {
+  DEFAULT_EMOTION_CONTEXT,
+  EMOTION_CONTEXT_OPTIONS,
+  type EmotionContext,
+} from "@/lib/emotion-context";
 
 type VideoSourceInputProps = {
   value: string;
@@ -24,6 +29,8 @@ type VideoSourceInputProps = {
   onClipDurationPresetChange?: (value: ClipDurationPreset) => void;
   clipCountTarget?: ClipCountTarget;
   onClipCountTargetChange?: (value: ClipCountTarget) => void;
+  emotionContext?: EmotionContext;
+  onEmotionContextChange?: (value: EmotionContext) => void;
   disabled?: boolean;
 };
 
@@ -44,6 +51,8 @@ export function VideoSourceInput({
   onClipDurationPresetChange,
   clipCountTarget = 6,
   onClipCountTargetChange,
+  emotionContext = DEFAULT_EMOTION_CONTEXT,
+  onEmotionContextChange,
   disabled = false,
 }: VideoSourceInputProps) {
   return (
@@ -145,6 +154,25 @@ export function VideoSourceInput({
             Atur gaya durasi clip: singkat, medium, panjang (maks ~5 menit), atau campuran otomatis.
           </p>
         </div>
+      </div>
+
+      <div className="border border-white/10 bg-[#1f1f1f] p-4 space-y-3">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-white/60">Emotion Context</p>
+        <select
+          className="w-full bg-black border border-white/20 px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-white/50"
+          value={emotionContext}
+          onChange={(event) => onEmotionContextChange?.(event.target.value as EmotionContext)}
+          disabled={disabled}
+        >
+          {EMOTION_CONTEXT_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+        <p className="text-[11px] text-white/45">
+          Pilih nuansa emosi utama yang ingin diprioritaskan AI saat memilih highlight.
+        </p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

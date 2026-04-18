@@ -154,6 +154,7 @@ describe("runIterativeHighlightPipeline", () => {
       apiKey: "test-key",
       clipCountTarget: 2,
       durationPreset: "under_1_minute",
+      emotionContext: "joy",
       durationRangeMs: {
         min: 20_000,
         max: 60_000,
@@ -194,6 +195,7 @@ describe("runIterativeHighlightPipeline", () => {
       apiKey: "test-key",
       clipCountTarget: 2,
       durationPreset: "under_1_minute",
+      emotionContext: "joy",
       durationRangeMs: {
         min: 20_000,
         max: 60_000,
@@ -248,6 +250,7 @@ describe("runIterativeHighlightPipeline", () => {
       apiKey: "test-key",
       clipCountTarget: 1,
       durationPreset: "under_1_minute",
+      emotionContext: "joy",
       durationRangeMs: {
         min: 20_000,
         max: 60_000,
@@ -277,11 +280,100 @@ describe("runIterativeHighlightPipeline", () => {
         apiKey: "test-key",
         clipCountTarget: 1,
         durationPreset: "under_1_minute",
+        emotionContext: "joy",
         durationRangeMs: {
           min: 20_000,
           max: 60_000,
         },
       })
     ).rejects.toThrow("selection failed");
+  });
+
+  it("passes emotion context into Groq calls and surfaces emotion-aware shortlist fields", async () => {
+    const transcript = Array.from({ length: 4 }, (_, index) => ({
+      startMs: index * 10_000,
+      endMs: index * 10_000 + 9_000,
+      text: `segment-${index + 1}`,
+    }));
+
+    selectWindowMock.mockResolvedValue({
+      model: "model-a",
+      windowIndex: 0,
+      candidates: [
+        {
+          startMs: 0,
+          endMs: 30_000,
+          scoreTotal: 0.82,
+          scoreText: 0.8,
+          reason: "emotional payoff",
+          topic: "story",
+          matchedEmotionContext: "joy",
+          emotionFitScore: 91,
+          emotionFitReason: "Strong uplifting turn.",
+          emotionFallback: false,
+        },
+      ],
+    });
+
+    criticEvaluateMock.mockResolvedValue({
+      model: "critic-a",
+      evaluations: [
+        {
+          startMs: 0,
+          endMs: 30_000,
+          overallScore: 80,
+          hookScore: 80,
+          valueScore: 79,
+          clarityScore: 78,
+          emotionScore: 81,
+          noveltyScore: 75,
+          shareabilityScore: 80,
+          isPass: true,
+          failureReasons: [],
+          fixGuidance: "",
+          topic: "story",
+          matchedEmotionContext: "joy",
+          emotionFitScore: 91,
+          emotionFitReason: "Strong uplifting turn.",
+          emotionFallback: false,
+        },
+      ],
+    });
+
+    const result = await runIterativeHighlightPipeline({
+      videoId: "video-1",
+      jobId: "job-1",
+      transcriptSegments: transcript,
+      apiKey: "test-key",
+      clipCountTarget: 1,
+      durationPreset: "under_1_minute",
+      emotionContext: "joy",
+      durationRangeMs: {
+        min: 20_000,
+        max: 60_000,
+      },
+    });
+
+    expect(selectWindowMock).toHaveBeenCalledWith(expect.anything(), "test-key", expect.objectContaining({ emotionContext: "joy" }));
+    expect(criticEvaluateMock).toHaveBeenCalledWith(
+      transcript,
+      expect.any(Array),
+      "test-key",
+      expect.objectContaining({ emotionContext: "joy", passThreshold: 78 })
+    );
+    expect(result.shortlist[0]).toEqual(
+      expect.objectContaining({
+        matchedEmotionContext: "joy",
+        emotionFitScore: 91,
+        emotionFitReason: "Strong uplifting turn.",
+        emotionFallback: false,
+        review: expect.objectContaining({
+          matchedEmotionContext: "joy",
+          emotionFitScore: 91,
+          emotionFitReason: "Strong uplifting turn.",
+          emotionFallback: false,
+        }),
+      })
+    );
   });
 });

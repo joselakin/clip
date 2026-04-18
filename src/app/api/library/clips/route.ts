@@ -52,6 +52,10 @@ export async function GET(request: NextRequest) {
           select: {
             scoreTotal: true,
             reasonJson: true,
+            matchedEmotionContext: true,
+            emotionFitScore: true,
+            emotionFitReason: true,
+            emotionFallback: true,
           },
         },
         video: {
@@ -84,6 +88,10 @@ export async function GET(request: NextRequest) {
           ? {
               scorePercent,
               reasonJson: clip.highlightCandidate.reasonJson,
+              matchedEmotionContext: clip.highlightCandidate.matchedEmotionContext,
+              emotionFitScore: clip.highlightCandidate.emotionFitScore,
+              emotionFitReason: clip.highlightCandidate.emotionFitReason,
+              emotionFallback: clip.highlightCandidate.emotionFallback,
             }
           : null,
         video: clip.video,

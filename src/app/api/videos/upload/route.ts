@@ -6,6 +6,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { isValidSessionToken, SESSION_COOKIE_NAME } from "@/lib/auth";
 import { parseClipCountTarget, parseClipDurationPreset } from "@/lib/clip-duration";
+import { parseEmotionContext } from "@/lib/emotion-context";
 import { createLogger } from "@/lib/logger";
 import { probeVideoMetadata } from "@/lib/media";
 import { prisma } from "@/lib/prisma";
@@ -94,6 +95,7 @@ type WatermarkInput = {
   podcastTwoSpeakerMode: boolean;
   clipDurationPreset: ReturnType<typeof parseClipDurationPreset>;
   clipCountTarget: ReturnType<typeof parseClipCountTarget>;
+  emotionContext: ReturnType<typeof parseEmotionContext>;
   text: string | null;
   logoFile: File | null;
 };
@@ -123,6 +125,7 @@ function parseWatermarkInput(form: FormData): WatermarkInput {
     podcastTwoSpeakerMode,
     clipDurationPreset,
     clipCountTarget,
+    emotionContext: parseEmotionContext(form.get("emotionContext")),
     text: text || null,
     logoFile,
   };
@@ -196,6 +199,7 @@ export async function POST(request: NextRequest) {
       await prisma.video.update({
         where: { id: existing.id },
         data: {
+          requestedEmotionContext: watermarkInput.emotionContext,
           metadata: {
             ...oldMetadata,
             renderLayout: watermarkInput.renderLayout,
@@ -243,7 +247,7 @@ export async function POST(request: NextRequest) {
       writtenWatermarkPath = resolveStoragePath(watermarkLogoStorageKey);
     }
 
-    const created = await prisma.video.create({
+    const created = await (prisma.video.create as unknown as (args: Record<string, unknown>) => Promise<{ id: string; sourceUrl: string | null; storageKey: string; durationMs: number }>)({
       data: {
         sourceType: "upload",
         sourceTitle: file.name,
@@ -254,6 +258,7 @@ export async function POST(request: NextRequest) {
         originalFilename: file.name,
         sha256,
         durationMs: probed.durationMs,
+        requestedEmotionContext: watermarkInput.emotionContext,
         fps: probed.fps,
         width: probed.width,
         height: probed.height,

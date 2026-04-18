@@ -556,4 +556,176 @@ describe("highlights fallback and schema behavior", () => {
     ).rejects.toThrow("Groq regenerate highlight gagal (403): forbidden");
     expect(requestGroqJsonMock).toHaveBeenCalledTimes(1);
   });
+
+  it("normalizes optional emotion fields and injects emotion guidance into prompts", async () => {
+    const { highlights, requestGroqJsonMock } = await loadHighlightsWithSharedMocks();
+
+    requestGroqJsonMock.mockResolvedValueOnce({
+      data: {
+        candidates: [
+          {
+            startMs: 1000,
+            endMs: 26000,
+            scoreTotal: 0.84,
+            scoreText: 0.8,
+            reason: "uplifting reveal",
+            matchedEmotionContext: "joy",
+            emotionFitScore: 88,
+            emotionFitReason: "Strong uplifting release.",
+            emotionFallback: true,
+          },
+        ],
+      },
+      status: 200,
+      rawContent: "ok",
+    });
+
+    const selection = await highlights.selectHighlightsWithGroq(
+      [{ startMs: 0, endMs: 50000, text: "segment" }],
+      "test-key",
+      { emotionContext: "joy" }
+    );
+
+    expect(selection.candidates[0]).toEqual(
+      expect.objectContaining({
+        matchedEmotionContext: "joy",
+        emotionFitScore: 88,
+        emotionFitReason: "Strong uplifting release.",
+        emotionFallback: true,
+      })
+    );
+    const selectCall = requestGroqJsonMock.mock.calls[0]?.[0] as unknown as {
+      userPrompt: string;
+      schema: { properties: { candidates: { items: { properties: Record<string, unknown> } } } };
+    };
+    expect(selectCall.userPrompt).toContain("joy");
+    expect(selectCall.schema.properties.candidates.items.properties).toHaveProperty("matchedEmotionContext");
+    expect(selectCall.schema.properties.candidates.items.properties).toHaveProperty("emotionFitScore");
+
+    requestGroqJsonMock.mockReset();
+    requestGroqJsonMock.mockResolvedValueOnce({
+      data: {
+        evaluations: [
+          {
+            startMs: 1000,
+            endMs: 26000,
+            overallScore: 84,
+            hookScore: 83,
+            valueScore: 82,
+            clarityScore: 81,
+            emotionScore: 85,
+            shareabilityScore: 84,
+            whyThisWorks: "Kena secara emosional.",
+            improvementTip: "Buka lebih cepat.",
+            matchedEmotionContext: "joy",
+            emotionFitScore: 86,
+            emotionFitReason: "Payoff terasa uplifting.",
+            emotionFallback: false,
+            recommendedTitle: "Judul Bagus",
+          },
+        ],
+      },
+      status: 200,
+      rawContent: "ok",
+    });
+
+    const evaluation = await highlights.evaluateClipRecommendationsWithGroq(
+      [{ startMs: 0, endMs: 50000, text: "segment" }],
+      [selection.candidates[0]],
+      "test-key",
+      { emotionContext: "joy" }
+    );
+
+    expect(evaluation.evaluations[0]).toEqual(
+      expect.objectContaining({
+        matchedEmotionContext: "joy",
+        emotionFitScore: 86,
+        emotionFitReason: "Payoff terasa uplifting.",
+        emotionFallback: false,
+      })
+    );
+
+    requestGroqJsonMock.mockReset();
+    requestGroqJsonMock.mockResolvedValueOnce({
+      data: {
+        evaluations: [
+          {
+            startMs: 1000,
+            endMs: 26000,
+            overallScore: 83,
+            hookScore: 84,
+            valueScore: 82,
+            clarityScore: 80,
+            emotionScore: 78,
+            noveltyScore: 76,
+            shareabilityScore: 85,
+            isPass: true,
+            failureReasons: [],
+            fixGuidance: "ok",
+            matchedEmotionContext: "joy",
+            emotionFitScore: 80,
+            emotionFitReason: "Fits requested mood.",
+            emotionFallback: false,
+          },
+        ],
+      },
+      status: 200,
+      rawContent: "ok",
+    });
+
+    const critic = await highlights.criticEvaluateHighlightsWithGroq(
+      [{ startMs: 0, endMs: 50000, text: "segment" }],
+      [selection.candidates[0]],
+      "test-key",
+      { emotionContext: "joy" }
+    );
+
+    expect(critic.evaluations[0]).toEqual(
+      expect.objectContaining({
+        matchedEmotionContext: "joy",
+        emotionFitScore: 80,
+        emotionFitReason: "Fits requested mood.",
+        emotionFallback: false,
+      })
+    );
+
+    requestGroqJsonMock.mockReset();
+    requestGroqJsonMock.mockResolvedValueOnce({
+      data: {
+        candidates: [
+          {
+            startMs: 30000,
+            endMs: 52000,
+            scoreTotal: 0.87,
+            scoreText: 0.86,
+            reason: "improved",
+            matchedEmotionContext: "joy",
+            emotionFitScore: 82,
+            emotionFitReason: "Leans into uplifting payoff.",
+            emotionFallback: false,
+          },
+        ],
+      },
+      status: 200,
+      rawContent: "ok",
+    });
+
+    const regen = await highlights.regenerateHighlightsFromFailuresWithGroq(
+      [{ startMs: 0, endMs: 70000, text: "segment" }],
+      [{ ...critic.evaluations[0], isPass: false }],
+      "test-key",
+      { emotionContext: "joy" }
+    );
+
+    expect(regen.candidates[0]).toEqual(
+      expect.objectContaining({
+        matchedEmotionContext: "joy",
+        emotionFitScore: 82,
+        emotionFitReason: "Leans into uplifting payoff.",
+        emotionFallback: false,
+      })
+    );
+    const regenCall = requestGroqJsonMock.mock.calls[0]?.[0] as unknown as { userPrompt: string };
+    expect(regenCall.userPrompt).toContain("joy");
+  });
 });

@@ -26,6 +26,10 @@ type LibraryClip = {
   highlight: {
     scorePercent: number | null;
     reasonJson: unknown;
+    matchedEmotionContext?: string | null;
+    emotionFitScore?: number | null;
+    emotionFitReason?: string | null;
+    emotionFallback?: boolean | null;
   } | null;
   video: {
     id: string;
@@ -48,6 +52,10 @@ type ClipReviewView = {
   improvementTip: string | null;
   scoreHook: number | null;
   scoreValue: number | null;
+  matchedEmotionContext: string | null;
+  emotionFitScore: number | null;
+  emotionFitReason: string | null;
+  emotionFallback: boolean;
 };
 
 function formatMs(ms: number): string {
@@ -113,6 +121,7 @@ function asScore(value: unknown): number | null {
 function extractClipReview(clip: LibraryClip): ClipReviewView {
   const reasonRoot = asObject(clip.highlight?.reasonJson);
   const clipReview = asObject(reasonRoot?.clipReview);
+  const reasonFallback = clip.highlight?.emotionFallback ?? reasonRoot?.emotionFallback;
 
   return {
     recommendedTitle: asString(clipReview?.recommendedTitle),
@@ -121,6 +130,22 @@ function extractClipReview(clip: LibraryClip): ClipReviewView {
     improvementTip: asString(clipReview?.improvementTip),
     scoreHook: asScore(clipReview?.hookScore),
     scoreValue: asScore(clipReview?.valueScore),
+    matchedEmotionContext:
+      asString(clipReview?.matchedEmotionContext) ||
+      asString(reasonRoot?.matchedEmotionContext) ||
+      clip.highlight?.matchedEmotionContext ||
+      null,
+    emotionFitScore:
+      asScore(clipReview?.emotionFitScore) ??
+      asScore(reasonRoot?.emotionFitScore) ??
+      asScore(clip.highlight?.emotionFitScore) ??
+      null,
+    emotionFitReason:
+      asString(clipReview?.emotionFitReason) ||
+      asString(reasonRoot?.emotionFitReason) ||
+      clip.highlight?.emotionFitReason ||
+      null,
+    emotionFallback: typeof reasonFallback === "boolean" ? reasonFallback : false,
   };
 }
 
@@ -263,9 +288,17 @@ function LibraryClipCard({ clip }: { clip: LibraryClip }) {
               </span>
               <span className="text-sm font-black text-[#9dc0ff]">{review.overallScore}/100</span>
             </div>
-            {(review.scoreHook !== null || review.scoreValue !== null) && (
+            {(review.scoreHook !== null || review.scoreValue !== null || review.emotionFitScore !== null) && (
               <p className="text-[11px] text-[#b8c7ea]">
                 Hook {review.scoreHook ?? "-"} • Value {review.scoreValue ?? "-"}
+                {review.emotionFitScore !== null ? ` • Emotion ${review.emotionFitScore}` : ""}
+              </p>
+            )}
+            {(review.matchedEmotionContext || review.emotionFitReason) && (
+              <p className="text-[11px] text-[#d7def5] line-clamp-2">
+                {review.matchedEmotionContext ? `Emotion: ${review.matchedEmotionContext}` : "Emotion fit"}
+                {review.emotionFallback ? " • fallback" : ""}
+                {review.emotionFitReason ? ` • ${review.emotionFitReason}` : ""}
               </p>
             )}
             {review.whyThisWorks && (

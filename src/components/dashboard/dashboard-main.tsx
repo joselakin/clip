@@ -12,6 +12,10 @@ import {
   type ClipCountTarget,
   type ClipDurationPreset,
 } from "@/lib/clip-duration";
+import {
+  DEFAULT_EMOTION_CONTEXT,
+  type EmotionContext,
+} from "@/lib/emotion-context";
 
 type TranscriptLine = {
   startMs: number;
@@ -112,6 +116,7 @@ export function DashboardMain() {
   const [watermarkLogoFile, setWatermarkLogoFile] = useState<File | null>(null);
   const [clipDurationPreset, setClipDurationPreset] = useState<ClipDurationPreset>("under_1_minute");
   const [clipCountTarget, setClipCountTarget] = useState<ClipCountTarget>(DEFAULT_CLIP_COUNT_TARGET);
+  const [emotionContext, setEmotionContext] = useState<EmotionContext>(DEFAULT_EMOTION_CONTEXT);
   const [processing, setProcessing] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [isError, setIsError] = useState(false);
@@ -395,8 +400,10 @@ export function DashboardMain() {
         formData.append("file", selectedFile as File);
         formData.append("renderLayout", renderLayoutMode);
         formData.append("podcastTwoSpeakerMode", podcastModeEnabled ? "true" : "false");
-        formData.append("clipDurationPreset", clipDurationPreset);
-        formData.append("clipCountTarget", String(clipCountTarget));
+         formData.append("clipDurationPreset", clipDurationPreset);
+         formData.append("clipCountTarget", String(clipCountTarget));
+         formData.append("emotionContext", emotionContext);
+
         if (normalizedWatermarkText) {
           formData.append("watermarkText", normalizedWatermarkText);
         }
@@ -416,8 +423,10 @@ export function DashboardMain() {
         formData.append("url", url.trim());
         formData.append("renderLayout", renderLayoutMode);
         formData.append("podcastTwoSpeakerMode", podcastModeEnabled ? "true" : "false");
-        formData.append("clipDurationPreset", clipDurationPreset);
-        formData.append("clipCountTarget", String(clipCountTarget));
+         formData.append("clipDurationPreset", clipDurationPreset);
+         formData.append("clipCountTarget", String(clipCountTarget));
+         formData.append("emotionContext", emotionContext);
+
         if (normalizedWatermarkText) {
           formData.append("watermarkText", normalizedWatermarkText);
         }
@@ -524,6 +533,7 @@ export function DashboardMain() {
           videoId: importedVideoId,
           durationPreset: clipDurationPreset,
           clipCountTarget,
+          emotionContext,
         }),
       });
 
@@ -659,6 +669,7 @@ export function DashboardMain() {
       setWatermarkLogoFile(null);
       setClipDurationPreset("under_1_minute");
       setClipCountTarget(DEFAULT_CLIP_COUNT_TARGET);
+      setEmotionContext(DEFAULT_EMOTION_CONTEXT);
       redirectVideoId = importedVideoId;
     } catch {
       markStep(activeStep, "error", "Terjadi kesalahan jaringan saat memproses step ini.");
@@ -697,6 +708,8 @@ export function DashboardMain() {
           onClipDurationPresetChange={setClipDurationPreset}
           clipCountTarget={clipCountTarget}
           onClipCountTargetChange={setClipCountTarget}
+          emotionContext={emotionContext}
+          onEmotionContextChange={setEmotionContext}
           disabled={processing}
         />
         <ProduceClipsCta onClick={handleProduce} disabled={processing} isProcessing={processing} />

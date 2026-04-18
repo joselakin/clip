@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { type EmotionContext } from "@/lib/emotion-context";
 import {
   criticEvaluateHighlightsWithGroq,
   regenerateHighlightsFromFailuresWithGroq,
@@ -104,6 +105,10 @@ type ReviewPayload = {
   whyThisWorks: string;
   improvementTip: string;
   angle?: string;
+  matchedEmotionContext?: EmotionContext;
+  emotionFitScore?: number;
+  emotionFitReason?: string;
+  emotionFallback?: boolean;
 };
 
 export type PipelineShortlistCandidate = {
@@ -113,6 +118,10 @@ export type PipelineShortlistCandidate = {
   scoreText: number;
   reason: string;
   topic?: string;
+  matchedEmotionContext?: EmotionContext;
+  emotionFitScore?: number;
+  emotionFitReason?: string;
+  emotionFallback?: boolean;
   review: ReviewPayload;
 };
 
@@ -134,6 +143,7 @@ export type IterativePipelineInput = {
   apiKey: string;
   clipCountTarget: number;
   durationPreset: string;
+  emotionContext: EmotionContext;
   durationRangeMs: {
     min: number;
     max: number;
@@ -178,6 +188,13 @@ function strictPass(evaluation: HighlightCriticEvaluation, knobs: PipelineKnobs)
   return evaluation.isPass && evaluation.overallScore >= knobs.criticPassScoreMin && evaluation.hookScore >= knobs.criticHookScoreMin;
 }
 
+function getEmotionBoost(score?: number): number {
+  if (!Number.isFinite(score)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(8, ((score as number) - 50) * 0.12));
+}
+
 export async function runIterativeHighlightPipeline(
   input: IterativePipelineInput
 ): Promise<IterativePipelineOutput> {
@@ -197,6 +214,7 @@ export async function runIterativeHighlightPipeline(
       status: "running",
       clipCountTarget: input.clipCountTarget,
       durationPreset: input.durationPreset,
+      requestedEmotionContext: input.emotionContext,
       maxIterations: knobs.maxIterations,
       tokenUsageJson: {},
       notesJson: {
@@ -230,6 +248,7 @@ export async function runIterativeHighlightPipeline(
         {
           maxCandidates: input.clipCountTarget,
           durationRule,
+          emotionContext: input.emotionContext,
         }
       );
       selectModel = selected.model;
@@ -315,6 +334,7 @@ export async function runIterativeHighlightPipeline(
       input.apiKey,
       {
         passThreshold: knobs.criticPassScoreMin,
+        emotionContext: input.emotionContext,
       }
     );
     criticModel = seedCritic.model;
@@ -372,7 +392,10 @@ export async function runIterativeHighlightPipeline(
       const regen = await regenerateHighlightsFromFailuresWithGroq(
         input.transcriptSegments,
         latestFailures.slice(0, knobs.maxRegenPerIteration),
-        input.apiKey
+        input.apiKey,
+        {
+          emotionContext: input.emotionContext,
+        }
       );
       regenerateModel = regen.model;
       executedIterations = iteration;
@@ -380,14 +403,24 @@ export async function runIterativeHighlightPipeline(
       const dedupedRegen = dedupeCandidatesByIoU(
         regen.candidates.map(toIterationCandidate),
         DEDUPE_IOU_THRESHOLD
-      ).map((row) => ({
-        startMs: row.startMs,
-        endMs: row.endMs,
-        scoreTotal: Math.max(0.01, Math.min(0.99, row.score / 100)),
-        scoreText: Math.max(0.01, Math.min(0.99, row.score / 100)),
-        reason: `Regenerated candidate (iteration ${iteration})`,
-        topic: row.topic,
-      }));
+      ).map((row) => {
+        const sourceCandidate = regen.candidates.find(
+          (candidate) => candidate.startMs === row.startMs && candidate.endMs === row.endMs,
+        );
+
+        return {
+          startMs: row.startMs,
+          endMs: row.endMs,
+          scoreTotal: sourceCandidate?.scoreTotal ?? Math.max(0.01, Math.min(0.99, row.score / 100)),
+          scoreText: sourceCandidate?.scoreText ?? Math.max(0.01, Math.min(0.99, row.score / 100)),
+          reason: sourceCandidate?.reason || `Regenerated candidate (iteration ${iteration})`,
+          topic: sourceCandidate?.topic || row.topic,
+          matchedEmotionContext: sourceCandidate?.matchedEmotionContext,
+          emotionFitScore: sourceCandidate?.emotionFitScore,
+          emotionFitReason: sourceCandidate?.emotionFitReason,
+          emotionFallback: sourceCandidate?.emotionFallback,
+        };
+      });
 
       if (dedupedRegen.length === 0) {
         break;
@@ -403,6 +436,7 @@ export async function runIterativeHighlightPipeline(
         input.apiKey,
         {
           passThreshold: knobs.criticPassScoreMin,
+          emotionContext: input.emotionContext,
         }
       );
       criticModel = regenCritic.model;
@@ -460,9 +494,10 @@ export async function runIterativeHighlightPipeline(
         startMs: evaluation.startMs,
         endMs: evaluation.endMs,
         topic: evaluation.topic || candidate?.topic || "general",
-        score: evaluation.overallScore,
+        score: evaluation.overallScore + getEmotionBoost(evaluation.emotionFitScore ?? candidate?.emotionFitScore),
       };
     });
+
 
     const rankedPass = rankCandidatesWithDiversity(passCandidates, {
       targetCount: input.clipCountTarget,
@@ -477,7 +512,7 @@ export async function runIterativeHighlightPipeline(
         startMs: evaluation.startMs,
         endMs: evaluation.endMs,
         topic: evaluation.topic || "general",
-        score: evaluation.overallScore,
+        score: evaluation.overallScore + getEmotionBoost(evaluation.emotionFitScore),
       }));
 
     const finalRanked = [...rankedPass];
@@ -497,6 +532,10 @@ export async function runIterativeHighlightPipeline(
       const clarityScore = evaluation?.clarityScore || overallScore;
       const emotionScore = evaluation?.emotionScore || 72;
       const shareabilityScore = evaluation?.shareabilityScore || overallScore;
+      const matchedEmotionContext = evaluation?.matchedEmotionContext || candidate?.matchedEmotionContext;
+      const emotionFitScore = evaluation?.emotionFitScore ?? candidate?.emotionFitScore;
+      const emotionFitReason = evaluation?.emotionFitReason || candidate?.emotionFitReason;
+      const emotionFallback = evaluation?.emotionFallback ?? candidate?.emotionFallback;
 
       return {
         startMs: ranked.startMs,
@@ -505,6 +544,10 @@ export async function runIterativeHighlightPipeline(
         scoreText: Math.max(0.01, Math.min(1, valueScore / 100)),
         reason: candidate?.reason || `Ranked highlight ${index + 1}`,
         topic: candidate?.topic || ranked.topic,
+        matchedEmotionContext,
+        emotionFitScore,
+        emotionFitReason,
+        emotionFallback,
         review: {
           startMs: ranked.startMs,
           endMs: ranked.endMs,
@@ -519,6 +562,10 @@ export async function runIterativeHighlightPipeline(
           improvementTip:
             evaluation?.fixGuidance || "Perkuat 2 detik pertama dengan hook yang lebih tegas.",
           angle: candidate?.topic || ranked.topic,
+          matchedEmotionContext,
+          emotionFitScore,
+          emotionFitReason,
+          emotionFallback,
         },
       };
     });
